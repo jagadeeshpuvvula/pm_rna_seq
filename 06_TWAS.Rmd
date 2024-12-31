@@ -1,0 +1,333 @@
+---
+title: "05_analysis"
+author: "Puvvula"
+date: "2024-12-17"
+output: pdf_document
+---
+
+```{r}
+#air pollution data - standardized to mean 0 and SD=1
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
+rm(list = setdiff(ls(), "ap_exposures"))
+pm1<- ap_exposures |>
+  select(subject_id, 
+         matches("^pm_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$"),
+         matches("^bc_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$")) |>
+  mutate(across(
+    .cols = -subject_id, 
+    .fns = ~ scale(.x, center = TRUE, scale = TRUE)
+  )) |>
+  clean_names()
+
+
+#meta data
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/df_analysis.rda") 
+df_analysis<- df_analysis |> select(-c(5,13,14)) |>
+  filter(!(subject_id == 1092 & duplicated(subject_id)),
+         subject_id != 389) |> #missing RNAseq data
+  left_join(pm1, by = "subject_id") 
+
+#RNAseq data original data with 61,323 genes
+rna_seq_df <- read_csv("~/Documents/air_polln_rna_seq/normalized_rna_seq_crib/placenta_counts_normalized_by_DESeq2_CRIB.csv") %>%
+  filter(rowSums(select(., 3:78) == 0) < (ncol(select(., 3:78)) * 0.90))
+  # 24,545 genes after dropping genes with 90% participants have null values
+  
+  
+rna_seq_df_analysis<- rna_seq_df |>select(-c(2,77,78))
+
+# Then filter rows where sum >= 10
+rna_seq_df_analysis <- rna_seq_df_analysis[rowSums(rna_seq_df_analysis[, 2:75]) > 10, ]
+#retaining 24,205 genes for analysis
+```
+
+#box plots for RNAseq data - to check if data is transformed.
+#use this transposed data for other analysis
+```{r}
+rna_seq_viz <- rna_seq_df |> 
+  select(-1) |>                   # Step 1: Remove the first column
+  t() |>                         # Step 2: Transpose the data frame
+  as.data.frame() |>             # Step 3: Convert to a data frame
+  rownames_to_column("subject_id") |> # Optional: Convert row names to a column
+  (\(df) {                       # Step 4: Anonymous function for column renaming
+    colnames(df)[-1] <- df[1, -1]
+    df[-1, ]                     # Remove the first row and return
+  })()
+```
+
+#sort and filter RNAseq data
+```{r}
+# First create the matrix
+rna_seq_sorted <- rna_seq_df_analysis |>
+    select(all_of(intersect(rownames(df_analysis), colnames(rna_seq_df_analysis)))) |>
+    as.matrix() |>
+    round()
+```
+
+#check the sequence and participants with pm data have RNAseq data
+```{r}
+all(colnames(rna_seq_sorted) %in% rownames(df_analysis))
+all(colnames(rna_seq_sorted) == rownames(df_analysis))
+```
+
+# DESeq2 pipeline for categorical exposure data
+```{r}
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(countData = rna_seq_sorted,
+                              colData = df_analysis,
+                              design= ~ race + maternal_age + bmi + 
+                                education + tobacco_use_dur_preg + parity +
+                                pm_1)
+
+dds<- DESeq(dds)
+result_rna_seq <- results(dds, 
+                          pAdjustMethod = "BH",
+                          alpha = 0.01,
+                          parallel = T)
+summary(result_rna_seq)
+
+result_df<- as.data.frame(result_rna_seq)
+```
+
+###################################################
+###################################################
+#edgeR data prep
+###################################################
+###################################################
+```{r}
+load("~/Documents/air_polln_rna_seq/crib_data/for_mediation_analy.rda")
+
+#edge_df<- rna_seq_df_analysis |> select(Gene,all_of(intersect(df_analysis$subject_id, colnames(rna_seq_df_analysis)))) 
+
+# Assuming edger_df is your tibble
+# Extract the count data (all columns except the first one)
+counts <- edge_df[, -1]
+
+# Convert counts to a matrix
+counts_matrix <- as.matrix(counts)
+
+# Set row names of the matrix to be the Gene column
+rownames(counts_matrix) <- edge_df$Gene
+
+# Create the DGEList object
+dgList <- DGEList(counts = counts_matrix)
+
+#Compute counts per million (CPM)
+#countsPerMillion <- cpm(dgList)
+#summary(countsPerMillion)
+
+#removed genes with low counts
+#keep <- which(rowSums(countsPerMillion > 1) >= 2)
+#dgList <- dgList[keep,]
+#summary(cpm(dgList)) 
+#filtered to 16129 genes
+
+#dgList <- calcNormFactors(dgList, method="TMM")
+```
+###################################################
+###################################################
+#edgeR pipeline for continous exposure -test
+```{r}
+# Ensure your design matrix is properly set up
+designMat <- model.matrix(~ pm_2 + race + maternal_age + bmi + 
+                          education + tobacco_use_dur_preg + 
+                          parity, 
+                        data = df_analysis)
+
+# Estimate dispersion
+dgList <- estimateDisp(dgList, designMat)
+
+# Fit the model
+fit <- glmQLFit(dgList, designMat, 
+                robust = TRUE)
+
+# Test for differential expression
+# Here, we're testing the effect of pm_1 (assuming it's the second column in designMat)
+qlf <- glmQLFTest(fit, coef=2)
+
+# View all results
+top_results <- topTags(qlf, n = Inf)
+all_results <- as.data.frame(top_results)
+```
+
+#iterate through daily pm and bc exposures
+```{r}
+# Get all column names starting with "pm_" or "bc_"
+predictor_vars <- grep("^(pm_|bc_)", names(df_analysis), value = TRUE)
+
+# Initialize an empty list to store results
+results_list <- list()
+
+for (var in predictor_vars) {
+  # Create design matrix
+  designMat <- model.matrix(
+    as.formula(paste("~", var, "+ race + maternal_age + bmi + education + tobacco_use_dur_preg + parity")),
+    data = df_analysis
+  )
+  
+  # Estimate dispersion
+  dgList <- estimateDisp(dgList, designMat)
+  
+  # Fit the model
+  fit <- glmQLFit(dgList, designMat, robust = TRUE)
+  
+  # Test for differential expression
+  qlf <- glmQLFTest(fit, coef = 2)
+  
+  # Get top results
+  top_results <- topTags(qlf, n = Inf)
+  
+  # Convert to dataframe and add predictor variable
+  result_df <- as.data.frame(top_results$table)
+  result_df$predictor_variable <- var
+  
+  # Add rownames as a new column
+  result_df$gene <- rownames(result_df)
+  
+  # Add to results list
+  results_list[[var]] <- result_df
+}
+
+# Combine all results into a single dataframe
+all_results <- do.call(rbind, results_list)
+
+# Reset row names
+rownames(all_results) <- NULL
+
+write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_twas.csv")
+```
+
+#explore findings
+#Positive FC value upregulated - increased expression
+```{r}
+rna_seq_df <- read_csv("~/Documents/air_polln_rna_seq/normalized_rna_seq_crib/placenta_counts_normalized_by_DESeq2_CRIB.csv") |>
+  select(c(1,2)) |>
+  clean_names()
+
+#adding gene names
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas.csv") |>
+  left_join(rna_seq_df, by = "gene")
+
+write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv")
+```
+
+#summarizing and viz
+```{r}
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv")
+
+#filtered results by 5% FDR
+res_df<- all_results |>
+  filter(FDR < 0.05)
+
+#for PM2.5 only
+summary_table <- res_df |>
+  filter(str_starts(predictor_variable, "bc"))|>
+  group_by(gene_symbol) |>
+  summarise(
+    count = n(),
+    predictor_values_list = paste(predictor_variable, collapse = ", ")
+  ) |>
+  ungroup() |>
+  filter(count >= 20)
+
+filtered_res_df <- res_df |>
+  filter(gene_symbol %in% summary_table$gene_symbol) |>
+  mutate(
+    predictor_numeric = as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable))
+  ) |>
+  filter(str_starts(predictor_variable, "bc"))
+```
+
+#visualize results
+```{r}
+ggplot(filtered_res_df, aes(x = predictor_numeric, y = gene_symbol, fill = logFC)) +
+  geom_tile(color = "white") +
+  scale_x_continuous(breaks = sort(unique(filtered_res_df$predictor_numeric)),
+                     expand = c(0, 0)) +
+  scale_fill_gradient2(low = "red", mid = "white", high = "royalblue", midpoint = 0, name = "logFC") +
+  geom_vline(xintercept = 92.5, linetype = "dashed", color = "black") +
+  labs(x = "Black carbon exposure during gestation", y = "Gene") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0),
+        legend.position = "bottom",
+        legend.text = element_text(angle = 45, hjust = 1),
+        legend.title = element_text(vjust = 1),
+        legend.key.height = unit(0.3, "cm"),
+        panel.grid.major.x = element_blank(), 
+        panel.grid.minor.x = element_blank() )
+
+ggsave("~/Documents/air_polln_rna_seq/results/bc_rna_seq_result_first140days.tiff",
+       dpi=300,
+       bg="white",
+       width = 14,
+       height = 8)
+```
+
+#enrichment analysis
+#https://yulab-smu.top/biomedical-knowledge-mining-book/enrichment-overview.html
+```{r}
+library(pacman)
+p_load(tidyverse, clusterProfiler, org.Hs.eg.db, DOSE, 
+       msigdbr, enrichplot, AnnotationDbi, biomaRt)
+#m_df <- msigdbr(species = "Homo sapiens")
+
+enrich_df_pm <- all_results |>
+  filter(FDR < 0.05,
+         str_starts(predictor_variable, "pm")) |>
+  distinct(gene_symbol, gene)
+
+entrez_ids <- AnnotationDbi::mapIds(
+    org.Hs.eg.db,
+    keys = unique(all_results$gene),
+    column = "ENTREZID",
+    keytype = "ENSEMBL",
+    multiVals = "first"
+) |> as.data.frame() |>
+  rownames_to_column(var = "gene") |>
+  setNames(c("gene", "entrez_id"))
+
+# Add the Entrez IDs as a new column
+enrich_df_pm <- enrich_df_pm |>
+    left_join(entrez_ids, by = "gene")
+
+geneList <- data.frame(gene = unique(all_results$gene)) |>
+  left_join(entrez_ids, by = "gene")
+```
+
+```{r}
+#GO Gene Set Enrichment Analysis
+ego2 <- enrichGO(gene         = enrich_df_pm$gene,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = 'ENSEMBL',
+                ont           = "CC",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05, 
+                readable = T)
+goplot(ego2)
+
+
+x <- enrichDO(gene          = enrich_df_pm$entrez_id,
+              ont           = "DO",
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              universe      = geneList$entrez_id,
+              minGSSize     = 5,
+              maxGSSize     = 500,
+              qvalueCutoff  = 0.05,
+              readable      = T)
+
+cnetplot(x)
+heatplot(x, foldChange=geneList, showCategory=5)
+upsetplot(x)
+
+#
+x2 <- pairwise_termsim(x)
+treeplot(x2, hclust_method = "average")
+emapplot(x2, cex_category=1.5,layout="kk") 
+emapplot(x2, pie="count", cex_category=1.5, layout="kk")
+
+```
+
+
+

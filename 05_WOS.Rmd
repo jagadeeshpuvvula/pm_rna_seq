@@ -1,0 +1,199 @@
+---
+title: "Untitled"
+author: "05.1_WOS"
+date: "2024-12-22"
+output: pdf_document
+---
+
+#analysis for windows of susceptibility (4.6 months before pregnancy)
+
+#exposure data 
+```{r}
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
+rm(list = setdiff(ls(), "ap_exposures"))
+
+ap_exposures <- ap_exposures|>
+  filter(!(subject_id == 1092 & duplicated(subject_id)),
+         subject_id != 389)
+
+#filtered exposures during terminal pregnancy
+ap_df<- ap_exposures |> 
+  select(c(subject_id, pm, bc)) |>
+  #mutate(pm = map(pm, ~ tail(.x, 141)), bc = map(bc, ~ tail(.x, 141))) |>
+  mutate(pm = map(pm, ~ head(.x, 141)), bc = map(bc, ~ head(.x, 141))) 
+
+#formatting to match the analytic code
+# Extract the pm variable from ap_df
+pm_data <- do.call(rbind, ap_df$pm)  # Combine all lists into a single matrix
+row_names <- as.character(seq_len(nrow(pm_data)))  # Generate row names as "1", "2", ...
+col_names_pm <- paste0("pm_", seq_len(ncol(pm_data)))  # Generate column names as "pm_1", "pm_2", ...
+
+# Assign dimnames to the pm matrix
+dimnames(pm_data) <- list(row_names, col_names_pm)
+
+# Extract the bc variable from ap_df (assuming ap_df contains a 'bc' column)
+bc_data <- do.call(rbind, ap_df$bc)  # Combine all lists into a single matrix
+col_names_bc <- paste0("bc_", seq_len(ncol(bc_data)))  # Generate column names as "bc_1", "bc_2", ...
+
+# Assign dimnames to the bc matrix
+dimnames(bc_data) <- list(row_names, col_names_bc)
+
+# Convert to the required structure
+ap_list <- list(PM = pm_data, BC = bc_data)
+
+ap_exp <- ap_list |> lapply(as.matrix)
+```
+
+#outcome and covariates
+```{r}
+#meta data
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/df_analysis.rda") 
+df_analysis<- df_analysis |> select(-c(5,13,14)) |>
+  filter(!(subject_id == 1092 & duplicated(subject_id)),
+         subject_id != 389)  |>
+  mutate(ptb = case_when(
+    ptb == "Preterm" ~ 1,
+    ptb == "Term" ~ 0,
+    TRUE ~ NA_real_  # Handle any other values, if necessary
+  ))
+```
+
+#merging data - for logistic regression
+```{r}
+df_prelim <- left_join(df_analysis, ap_exposures, by = "subject_id")
+
+df_prelim$ptb <- relevel(df_prelim$ptb, ref = "Term")
+
+mylogit <- glm(ptb ~ pm_1 + race + maternal_age + bmi + 
+                 education + tobacco_use_dur_preg + 
+                 parity, data = df_prelim, family = "binomial")
+
+x <- data.frame(lapply(as.data.frame(exp(cbind(OR = coef(mylogit), confint(mylogit))))[2,], function(col) sprintf("%.2f", col)))
+
+
+# Create an empty list to store results
+results_list <- list()
+
+# Loop through pm_1 to pm_141
+for (i in 1:141) {
+  pm_var <- paste0("pm_", i)
+  
+  # Create the formula
+  formula <- as.formula(paste("ptb ~", pm_var, "+ race + maternal_age + bmi + 
+                              education + tobacco_use_dur_preg + parity"))
+  
+  # Fit the model
+  mylogit <- glm(formula, data = df_prelim, family = "binomial")
+  
+  # Extract and round the results
+  x <- data.frame(lapply(as.data.frame(exp(cbind(OR = coef(mylogit), confint(mylogit))))[2,], 
+                         function(col) sprintf("%.2f", col)))
+  
+  # Add the variable name as a row name
+  rownames(x) <- pm_var
+  
+  # Store the result in the list
+  results_list[[pm_var]] <- x
+}
+
+# Combine all results into a single dataframe
+final_results <- clean_names(do.call(rbind, results_list)) |>
+  rownames_to_column(var = "exposure") |>
+  separate(col = exposure, into = c("exposure", "exposure_time"), sep = "_")
+
+ggplot(final_results, aes(x = exposure_time, y = or, ymin = x2_5, ymax = x97_5)) +
+  geom_pointrange(color = "blue", size = 0.5) +
+  facet_grid(exposure~., scales = "free") +
+  theme_minimal()
+```
+
+#AI based modeling
+```{r}
+# Set a seed for reproducibility
+set.seed(123)
+
+# Create a stratified split
+train_index <- createDataPartition(df_prelim$ptb, p = 0.7, list = FALSE, times = 1)
+
+train_data <- df_prelim[train_index, ]
+test_data <- df_prelim[-train_index, ]
+
+# Set up repeated cross-validation
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+# Train your model (example using Random Forest)
+rf_model <- train(ptb ~ ., data = df_prelim, method = "rf", trControl = ctrl)
+
+```
+
+
+#tree DLNM model for WOS
+```{r}
+tdlnm.fit <- dlmtree(formula = ptb ~ race + maternal_age + bmi + 
+                       education + tobacco_use_dur_preg + 
+                       parity,
+                     data = df_analysis,
+                     #mixture = TRUE, 
+                     #exposure.data = ap_exp,
+                     #family = "gaussian",
+                     #dlm.type = "linear",
+                     exposure.data = ap_list[["PM"]],
+                     dlm.type = "nonlinear",
+                     family = "logit",
+                     tdlnm.exposure.splits = 15,
+                     n.burn = 25000, n.iter = 100000, n.thin = 5)
+```
+
+```{r}
+tdlnm.sum <- summary(tdlnm.fit)
+```
+
+#visualizing
+```{r}
+plot.data <- tdlnm.sum$plot.dat
+
+# Custom ggplot2 code for the "mean" plot type
+ggplot(plot.data, aes(xmin = Tmin + 1,  # Adjust start.time as needed
+                      xmax = Tmax + 1,
+                      ymin = Xmin,
+                      ymax = Xmax,
+                      fill = Est)) +
+  geom_rect() +
+  scale_fill_viridis_c(breaks = c(min(tdlnm.sum$plot.dat$Est), 
+                                  0, 
+                                  max(tdlnm.sum$plot.dat$Est)),
+                       labels = function(x) scales::scientific(x, digits = 1)
+                       ) +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(0, 35, by = 5)) +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(0, 140, by = 20)) +
+  theme_bw() +
+  labs(x = "Gestational days 0-140", 
+       y = "Daily maximum - PM2.5 levels", 
+       fill = "Odds Ratio", 
+       title = "") +
+  theme(legend.position = "bottom",
+        legend.text = element_text(angle = 45, hjust = 1),
+        legend.title = element_text(vjust = 1),
+        legend.key.height = unit(0.3, "cm")) +
+  geom_vline(xintercept = 93, linetype = "dashed", color = "white") +
+  geom_hline(yintercept = 9, linetype = "dashed", color = "white") +
+  geom_text(aes(x = 2, y = 9, label = "US-EPA proposed limit as of February 7, 2024"), 
+            color = "white", angle = 0, vjust = -0.5, hjust = 0, size = 3.5)
+
+ggsave("~/Documents/air_polln_rna_seq/results/pm_wos_result_first140days.tiff",
+       dpi=300,
+       bg="white",
+       width = 8,
+       height = 8)
+```
+
+#exposure-response at a specific time point
+```{r}
+plot(tdlnm.sum, plot.type = "slice", val = 2, main = "Slice at concentration 2")
+```
+
+#lagged associations
+```{r}
+plot(tdlnm.sum, plot.type = "slice", time = 7, main = "Slice at time 7")
+```
+

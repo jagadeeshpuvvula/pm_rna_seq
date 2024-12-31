@@ -1,0 +1,192 @@
+---
+title: "999_dev"
+author: "Puvvula"
+date: "2024-12-17"
+output: pdf_document
+---
+
+```{r}
+getRasterValueInRange <- function(dataframe, input_folder_name, batch_size = 8) {
+    # Print initial debugging info
+    cat("Function started with parameters:\n")
+    cat(sprintf("Input folder: %s\n", input_folder_name))
+    cat(sprintf("Number of rows in dataframe: %d\n", nrow(dataframe)))
+    cat("Sample of input data:\n")
+    print(head(dataframe))
+    
+    # Initialize an empty list to store extracted values for all observations
+    all_raster_values <- vector("list", length = nrow(dataframe))
+    
+    # Calculate number of batches
+    n_batches <- ceiling(nrow(dataframe) / batch_size)
+    
+    # Create a local copy of input_folder_name for parallel processing
+    folder_path <- input_folder_name
+    
+    for(batch in 1:n_batches) {
+        # Calculate batch indices
+        start_idx <- (batch - 1) * batch_size + 1
+        end_idx <- min(batch * batch_size, nrow(dataframe))
+        
+        cat(sprintf("\nProcessing batch %d of %d (rows %d to %d)\n", 
+                    batch, n_batches, start_idx, end_idx))
+        
+        # Setup parallel processing for this batch
+        cl <- makeCluster(min(batch_size, detectCores()))
+        registerDoParallel(cl)
+        
+        # Process the batch
+        batch_results <- foreach(i = start_idx:end_idx, 
+                                 .packages = c("raster"),
+                                 .errorhandling = 'pass') %dopar% {
+                                     tryCatch({
+                                         cat(sprintf("\n=== Starting processing for row %d ===\n", i))
+                                         
+                                         # Extract and validate date information
+                                         cat("Extracting date information...\n")
+                                         start_date <- try(as.Date(dataframe[i, "start_date"]), silent = TRUE)
+                                         end_date <- try(as.Date(dataframe[i, "delivery_date"]), silent = TRUE)
+                                         
+                                         cat(sprintf("Start date: %s, End date: %s\n", 
+                                                     format(start_date), format(end_date)))
+                                         
+                                         # Extract and validate coordinate information
+                                         cat("Extracting coordinate information...\n")
+                                         latitude <- try(as.numeric(dataframe[i, "lat"]), silent = TRUE)
+                                         longitude <- try(as.numeric(dataframe[i, "long"]), silent = TRUE)
+                                         
+                                         cat(sprintf("Latitude: %f, Longitude: %f\n", 
+                                                     latitude, longitude))
+                                         
+                                         # Validate inputs with detailed error messages
+                                         if (inherits(latitude, "try-error") || inherits(longitude, "try-error")) {
+                                             stop("Invalid coordinates format")
+                                         }
+                                         if (inherits(start_date, "try-error") || inherits(end_date, "try-error")) {
+                                             stop("Invalid date format")
+                                         }
+                                         if (is.na(start_date) || is.na(end_date)) {
+                                             stop("Dates contain NA values")
+                                         }
+                                         if (end_date < start_date) {
+                                             stop("End date is before start date")
+                                         }
+                                         
+                                         # Initialize an empty list to store daily values
+                                         daily_values <- list()
+                                         
+                                         # Iterate through each day in the date range
+                                         current_date <- start_date
+                                         while (current_date <= end_date) {
+                                             date_str <- format(current_date, "%Y%m%d")
+                                             cat(sprintf("\nProcessing date: %s\n", date_str))
+                                             
+                                             # Construct and verify file pattern
+                                             file_pattern <- sprintf("USHAP_BC_D1K_%s_V1\\.tif$", date_str)
+                                             cat(sprintf("Looking for files matching pattern: %s\n", file_pattern))
+                                             
+                                             # List files matching the current date
+                                             matching_files <- list.files(
+                                                 path = folder_path,  # Use the local copy of the path
+                                                 pattern = file_pattern, 
+                                                 full.names = TRUE, 
+                                                 recursive = TRUE
+                                             )
+                                             
+                                             cat(sprintf("Found %d matching files\n", length(matching_files)))
+                                             if(length(matching_files) > 0) {
+                                                 cat("Matching files:\n")
+                                                 print(matching_files)
+                                             }
+                                             
+                                             # Initialize value for this day
+                                             daily_value <- NA
+                                             
+                                             # Loop through each matching file
+                                             for (file in matching_files) {
+                                                 cat(sprintf("Processing file: %s\n", file))
+                                                 
+                                                 if (!file.exists(file)) {
+                                                     cat(sprintf("File does not exist: %s\n", file))
+                                                     next
+                                                 }
+                                                 
+                                                 # Load the raster file
+                                                 cat("Loading raster file...\n")
+                                                 raster_data <- try(raster(file), silent = TRUE)
+                                                 
+                                                 if (inherits(raster_data, "try-error")) {
+                                                     cat(sprintf("Failed to load raster: %s\n", 
+                                                                 attr(raster_data, "condition")$message))
+                                                     next
+                                                 }
+                                                 
+                                                 if (inherits(raster_data, "RasterLayer")) {
+                                                     cat("Successfully loaded raster. Extracting value...\n")
+                                                     # Create points from coordinates
+                                                     point <- cbind(longitude, latitude)
+                                                     
+                                                     # Extract the raster value
+                                                     value <- try(extract(raster_data, point), silent = TRUE)
+                                                     
+                                                     if (!inherits(value, "try-error") && !is.na(value) && !is.nan(value)) {
+                                                         daily_value <- value
+                                                         cat(sprintf("Successfully extracted value: %f\n", value))
+                                                     } else {
+                                                         cat("Failed to extract value or value is NA/NaN\n")
+                                                     }
+                                                     
+                                                     # Clean up
+                                                     rm(raster_data)
+                                                     gc()
+                                                 }
+                                             }
+                                             
+                                             # Store the daily value
+                                             daily_values[[date_str]] <- sprintf("%.2f", daily_value)
+                                             cat(sprintf("Stored value for date %s: %s\n", 
+                                                         date_str, daily_values[[date_str]]))
+                                             
+                                             # Increment date
+                                             current_date <- as.Date(current_date + 1)
+                                         }
+                                         
+                                         cat(sprintf("Successfully completed processing for row %d\n", i))
+                                         return(daily_values)
+                                         
+                                     }, error = function(e) {
+                                         cat(sprintf("ERROR in row %d: %s\n", i, e$message))
+                                         return(NULL)
+                                     })
+                                 }
+        
+        # Stop the cluster for this batch
+        stopCluster(cl)
+        
+        # Store batch results in the main results list
+        batch_indices <- start_idx:end_idx
+        all_raster_values[batch_indices] <- batch_results
+        
+        # Check for failures in this batch with detailed information
+        null_indices <- which(sapply(batch_results, is.null))
+        if (length(null_indices) > 0) {
+            actual_indices <- batch_indices[null_indices]
+            warning(sprintf("Batch %d: Failed processing for rows: %s", 
+                            batch, paste(actual_indices, collapse = ", ")))
+        }
+    }
+    
+    # Final status report
+    cat("\nProcessing completed.\n")
+    cat(sprintf("Total rows processed: %d\n", nrow(dataframe)))
+    cat(sprintf("Successful rows: %d\n", sum(!sapply(all_raster_values, is.null))))
+    cat(sprintf("Failed rows: %d\n", sum(sapply(all_raster_values, is.null))))
+    
+    # Append all results to the dataframe
+    dataframe$raster_value <- all_raster_values
+    
+    return(dataframe)
+}
+
+```
+

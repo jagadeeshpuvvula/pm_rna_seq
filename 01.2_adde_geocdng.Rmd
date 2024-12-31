@@ -1,0 +1,33 @@
+---
+title: "01.2_addr_geocdng"
+author: "Puvvula"
+date: "2024-12-13"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+address<- read_csv("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/for_geocoding.csv") |>
+  mutate(add_line_1 = str_replace(add_line_1, "(?i)\\b(?:apt|unit)\\b\\s*\\w*", ""),
+         zip = str_extract(zip, "\\b\\d{5}\\b")) |>
+  mutate(state = fct_recode(state,
+                            "DE" = "Delaware",
+                            "NJ" = "New Jersey",
+                            "PA" = "Pennsylvania"),
+         city = str_to_title(city),
+         addr = paste(add_line_1, city, state, zip, sep = ", "))
+
+geocoded_addresses <- address |>
+  geocode(addr, method = 'osm', lat = latitude , long = longitude)
+
+#geocoded address export
+geocoded_addresses_exp<- geocoded_addresses |>
+  filter(subject_id != "PA_libray")
+
+write_csv(geocoded_addresses_exp, "~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/geocoded.csv")
+```
+

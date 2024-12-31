@@ -1,0 +1,124 @@
+---
+title: "07_mediation_analysis"
+author: "Jagadeesh Puvvula"
+date: "2024-12-29"
+output: pdf_document
+---
+
+```{r}
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
+  filter(FDR < 0.05) |>
+  filter(str_starts(predictor_variable, "pm")) |>
+  distinct(gene, gene_symbol)
+```
+
+#Clean RNAseq, exposure, covariate data
+```{r}
+load("~/Documents/air_polln_rna_seq/crib_data/for_mediation_analy.rda")
+
+#filtered genes that are significantly associated with air pollution
+rna_seq_med <- edge_df |>
+  filter(Gene %in% all_results$gene) |>
+  t()
+
+# Set the first row as column names and remove it from the data
+colnames(rna_seq_med) <- rna_seq_med[1, ]
+rna_seq_med <- rna_seq_med[-1, ] 
+
+#scaling rna seq values
+rna_seq_med_numeric <- matrix(as.numeric(rna_seq_med), nrow=nrow(rna_seq_med), ncol=ncol(rna_seq_med))
+rownames(rna_seq_med_numeric) <- rownames(rna_seq_med)
+colnames(rna_seq_med_numeric) <- colnames(rna_seq_med)
+scaled_rna_seq_med <- scale(rna_seq_med_numeric)
+
+```
+
+#mediation analysis
+#alpha_hat: coefficient estimates of exposure (X) –> mediators (M) (adjusted for covariates).
+#alpha_se: standard error for alpha.
+#beta_hat: coefficient estimates of mediators (M) –> outcome (Y) (adjusted for covariates and exposure).
+#beta_se: standard error for beta.
+#IDE: mediation (indirect) effect, i.e., alpha*beta.
+#rimp: relative importance of the mediator.
+#pmax: joint raw p-value of selected significant mediator (based on divide-aggregate compositenull test [DACT] method).
+```{r}
+classicHima.fit <- classicHIMA(
+  X = as.numeric(df_analysis$pm_26),
+  Y = as.factor(df_analysis$ptb),
+  M = scaled_rna_seq_med,
+  #COV.XM = df_analysis[, c("ga_at_delivery", "maternal_age")],
+  #COV.MY = df_analysis[, c("ga_at_delivery", "maternal_age")],
+  penalty = c("lasso"),
+  Bonfcut = 0.1,
+  Y.type = "binary",
+  scale = T, 
+  verbose = TRUE,
+  parallel = T,
+  ncore = 10
+  )
+```
+
+#automating
+```{r}
+# Initialize empty dataframe
+final_results <- data.frame()
+
+for (i in 1:141) {
+  pm_col <- paste0("pm_", i)
+  
+  tryCatch({
+    print(paste("Processing:", pm_col))
+    
+    result <- classicHIMA(
+      X = as.numeric(df_analysis[[pm_col]]),
+      Y = as.factor(df_analysis$ptb),
+      M = scaled_rna_seq_med,
+      penalty = c("lasso"),
+      Y.type = "binary",
+      Bonfcut = 0.05,
+      scale = TRUE,
+      verbose = TRUE,
+      parallel = TRUE,
+      ncore = 10
+    )
+    
+    print("Result structure:")
+    print(str(result))
+    
+    # If the result is not null and contains data, process it
+    if (!is.null(result) && nrow(result) > 0) {
+      print("Full result:")
+      print(result)
+      
+      # Convert result to dataframe
+      result_df <- as.data.frame(result)
+      
+      # Add the pm_variable column
+      result_df$pm_variable <- pm_col
+      
+      # Append to final_results
+      if (nrow(final_results) == 0) {
+        final_results <- result_df
+      } else {
+        final_results <- rbind(final_results, result_df)
+      }
+      
+      print("Current final_results dimensions:")
+      print(dim(final_results))
+    } else {
+      print(paste("No valid data for", pm_col))
+    }
+    
+    print(paste("Completed analysis for", pm_col))
+    
+  }, error = function(e) {
+    message(paste("Error in", pm_col, ":", e$message))
+  })
+}
+```
+
+```{r}
+write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_pm.csv")
+```
+
+

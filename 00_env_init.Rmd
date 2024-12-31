@@ -1,0 +1,47 @@
+---
+title: "00_env_init"
+author: "Puvvula"
+date: "2024-11-01"
+output: pdf_document
+---
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, janitor, dlmtree)
+#library(GEOquery)
+```
+
+```{r}
+gse <- getGEO("GSE174415")
+```
+
+```{r}
+expression_df <- readr::read_tsv("~/Documents/air_polln_rna_seq/GSE174415_raw_counts_GRCh38.p13_NCBI.tsv")
+anno_df <- readr::read_tsv("~/Documents/air_polln_rna_seq/Human.GRCh38.p13.annot.tsv")
+```
+
+#filter gene expression data with a cutoff
+```{r}
+filtered_expression_df <- expression_df %>%
+  filter(rowSums(select(., -GeneID)) >= 10)
+
+filtered_expression_df<- filtered_expression_df |>
+  mutate(across(-GeneID, ~ as.data.frame(scale(.))))
+```
+
+#visualization
+```{r}
+long_df <- filtered_expression_df |>
+  pivot_longer(cols = -GeneID, names_to = "Sample", values_to = "Expression")
+```
+
+```{r}
+ggplot(long_df, aes(x = Sample, y = as.factor(GeneID), fill = Expression)) +
+  geom_tile(color = "white") +  # Add borders to tiles
+  scale_fill_gradient(low = "white", high = "blue", na.value = "grey50") +  # Color scale
+  theme_minimal() +
+  labs(title = "Filtered Gene Expression Heatmap", x = "Sample", y = "Gene ID", fill = "Expression Level") +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+```
+

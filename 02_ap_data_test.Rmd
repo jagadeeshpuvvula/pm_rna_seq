@@ -1,0 +1,17 @@
+---
+title: "02_ap_data_test"
+author: "Puvvula"
+date: "2024-11-19"
+output: pdf_document
+---
+
+```{r}
+library(pacman)
+
+pacman::p_load(tidyverse, archive, ncdf4)
+```
+
+```{r}
+archive_contents <- archive::archive("~/Documents/air_polln_rna_seq/PM_1km_2000_2020/PM2_5_1km_US.zip")
+```
+

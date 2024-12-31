@@ -1,0 +1,46 @@
+---
+title: "03_pm_data_prep"
+author: "Puvvula"
+date: "2024-12-11"
+output: pdf_document
+---
+
+#transformed all .nc files to rasters as suggested by the authors generated the data
+```{r}
+library(raster)
+library(furrr)
+
+process_nc_to_tif <- function(workpath, outpath, ap) {
+  # List all .nc files recursively
+  files <- list.files(workpath, pattern = "*.nc", full.names = TRUE, recursive = TRUE)
+
+  # Set up parallel computing with the available cores
+  plan(multisession)
+
+  # Function to process and save raster data
+  process_file <- function(file) {
+    try({
+      nc2raster <- raster(file, varname = ap, band = 1)
+      # Construct output file path in outpath
+      out_file <- file.path(outpath, paste0(strsplit(basename(file), ".nc")[[1]][1], '.tif'))
+      writeRaster(nc2raster, out_file, format = 'GTiff', overwrite = TRUE)
+      print(paste(out_file, 'Finished'))
+    }, silent = TRUE)
+  }
+
+  # Apply the function to all files in parallel
+  future_map(files, process_file)
+}
+```
+
+#converted the data to rasters
+```{r}
+process_nc_to_tif(
+  workpath = "~/Documents/air_polln_rna_seq/BC_1km_2000_2020/BC_1km_daily_unzipped/",
+  outpath = "~/Documents/air_polln_rna_seq/BC_1km_2000_2020/BC_tifs_processed/",
+  ap = 'BC'
+  )
+```
+
+#all the .nc files archived in external drive
+

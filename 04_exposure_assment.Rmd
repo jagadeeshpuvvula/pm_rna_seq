@@ -1,0 +1,158 @@
+---
+title: "04_exposure_assment"
+author: "Puvvula"
+date: "2024-12-17"
+output: pdf_document
+---
+
+#load participant data
+```{r}
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/df_analysis.rda")
+
+#rounded Gestational age to floor and estimated the pregnancy start date
+df_exp_assmt <- df_analysis |>
+  mutate(
+    weeks_rounded = floor(ga_at_delivery), 
+    start_date = delivery_date - weeks(weeks_rounded)
+  ) |>
+  select(c(1,17,5, 13, 14))
+```
+
+#assign daily PM and BC exposure data
+#PM2.5 and BC Units = μg/m3
+```{r}
+bc<- getRasterValueInRange(dataframe = df_exp_assmt,
+                      input_folder_name = "~/Documents/air_polln_rna_seq/BC_1km_2000_2020",
+                      batch_size = 10)
+```
+
+#clean raster values
+```{r}
+pm_clean <- pm |>
+  mutate(
+    raster_value = map(raster_value, ~ as.numeric(.x)),
+    pm = map(raster_value, ~ .x[1:length(.x)]), # Extract all values
+    pm_expanded = map(pm, ~ set_names(.x, paste0("pm_", seq_along(.x)))) # Add unique names
+  ) |>
+  select(-raster_value) |> 
+  unnest_wider(pm_expanded) |> # Unnest pm_expanded into multiple columns
+  mutate(across(starts_with("pm_"), as.numeric)) |> # Ensure new columns are numeric
+  select(-c(2:5)) |>
+  filter(!(subject_id == 1092 & duplicated(subject_id)))
+
+bc_clean <- bc |>
+  mutate(
+    raster_value = map(raster_value, ~ as.numeric(.x)),
+    bc = map(raster_value, ~ .x[1:length(.x)]), # Extract all values
+    bc_expanded = map(bc, ~ set_names(.x, paste0("bc_", seq_along(.x)))) # Add unique names
+  ) |>
+  select(-raster_value) |> 
+  unnest_wider(bc_expanded) |> # Unnest pm_expanded into multiple columns
+  mutate(across(starts_with("bc_"), as.numeric)) |> # Ensure new columns are numeric 
+  select(-c(2:5)) |>
+  filter(!(subject_id == 1092 & duplicated(subject_id))) 
+```
+
+#join bc and pm data to a dataframe
+```{r}
+ap_exposures<- left_join(pm_clean, bc_clean, by="subject_id")
+```
+
+#save exposure data
+```{r}
+save(bc, bc_clean, pm, pm_clean, ap_exposures, file = "~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
+```
+
+#Data prep for visualizing 
+```{r}
+df_long <- ap_exposures |>
+    select(subject_id, pm, bc) |>  # Select only the relevant columns
+    unnest(cols = c(pm, bc)) |>  # Unnest the pm column
+    group_by(subject_id) |>  # Group by subject_id
+    mutate(
+        pm_value = as.numeric(trimws(pm)),  # Convert pm values to numeric
+        bc_value = as.numeric(trimws(bc)),
+        time = row_number(),  # Create a time variable for each subject_id
+        trim = case_when(
+      time >= 1 & time <= 122 ~ "first_trim",  # Time between 1 and 122 days
+      time >= 113 & time <= 211 ~ "sec_trim",  # Time between 113 and 211 days
+      time >= 212 ~ "third_trim",  # Time between 212 days and beyond
+      TRUE ~ NA_character_  # Handle any other cases (if necessary)
+    )
+    ) |>
+    ungroup() |> # Ungroup to remove the grouping
+  select(c(subject_id, pm, bc, time, trim)) |>
+  pivot_longer(cols = c(pm, bc), 
+               names_to = "air_pollt", 
+               values_to = "value")|>
+  left_join(df_analysis |>
+              select(subject_id, ptb), by = "subject_id") |>
+  mutate(subject_id = factor(subject_id, levels = unique(subject_id[order(ptb)]))) |>
+  mutate(trim = fct_recode(trim,
+                           "First trimester" = "first_trim",
+                           "Second trimester" = "sec_trim",
+                           "Third trimester" = "third_trim"),
+         air_pollt = fct_recode(air_pollt,
+                                "Particulate Matter" = "pm",
+                                "Black Carbon" = "bc"))
+```
+
+#viz
+```{r}
+df_long_pm<- df_long |> filter(air_pollt == "Black Carbon")
+
+ggplot(df_long_pm, aes(x = time, y = factor(subject_id), fill = value)) +
+  geom_tile() +  # Create heatmap tiles
+  scale_fill_viridis_c() +  # Use a color scale from the viridis palette
+  theme_minimal() +  # Minimal theme for clarity
+  geom_hline(yintercept = 34.5, linetype = "dashed", color = "white", size = 1)+
+  labs(
+    x = "Gestation (days)",
+    y = "Study participants",
+    fill = "Black Carbon"  # Label for the fill legend
+  ) +
+  facet_grid(air_pollt~trim, scales = "free", space = "free")+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1), 
+    axis.text.y = element_blank(),  # Optionally remove y-axis labels if they're too dense
+    axis.ticks.y = element_blank(),  # Remove ticks on the y-axis
+    legend.position = "bottom",  # Position the legend at the bottom
+    legend.direction = "horizontal",  # Arrange legend items horizontally
+    legend.title = element_text(size = 10),  # Adjust legend title size
+    legend.text = element_text(size = 8)  # Adjust legend text size
+  )
+
+ggsave("~/Documents/air_polln_rna_seq/results/exposure_trends_bc_heatmap.tiff",
+       dpi=300,
+       bg="white",
+       width = 14,
+       height = 12)
+```
+
+#ridge plot
+```{r}
+ggplot(df_long, aes(x = value, y = factor(subject_id), fill = factor(trim))) +
+  geom_hline(yintercept = 36.5, linetype = "dashed", color = "red", size = 1)+
+    geom_density_ridges(alpha = 0.7, scale = 2) +  # Create ridgelines
+    scale_fill_viridis_d() +  # Use viridis color scale for the ridgelines, using discrete colors
+    theme_minimal() +  # Minimal theme for clarity
+    labs(x = " ", y = "Study participants", fill = " ") +  # Labels
+    ggh4x::facet_nested(. ~ air_pollt+trim, scales = "free_x") +
+  theme(
+        axis.text.x = element_text(angle = 90, hjust = 1),  # Rotate x-axis labels for readability
+        axis.text.y = element_blank(),  # Optionally remove y-axis labels if they're too dense
+        axis.ticks.y = element_blank(),  # Remove ticks on the y-axis
+        legend.position = "bottom",  # Position the legend at the bottom
+        legend.direction = "horizontal",  # Arrange legend items horizontally
+        legend.title = element_text(size = 10),  # Adjust legend title size
+        legend.text = element_text(size = 8)  # Adjust legend text size
+    ) +
+    scale_x_continuous(expand = expansion(mult = c(0.2, 0.05)), limits = c(0, NA))
+
+ggsave("~/Documents/air_polln_rna_seq/results/exposure_trends.tiff",
+       dpi=300,
+       bg="white",
+       width = 8,
+       height = 12)
+```
+

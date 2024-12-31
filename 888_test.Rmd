@@ -1,0 +1,23 @@
+---
+title: "888_test"
+author: "Puvvula"
+date: "2024-11-08"
+output: pdf_document
+---
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("Rsubread", "Rbowtie", "ShortRead", "GenomicAlignments", 
+                       "GenomicFeatures", "rtracklayer", "edgeR"))
+```
+
+```{r}
+pacman::p_load(ShortRead)
+```
+
+```{r}
+fq<- readFastq("~/Documents/transcriptomics/data/raw_data/SRR8668774.fastq")
+```
+
