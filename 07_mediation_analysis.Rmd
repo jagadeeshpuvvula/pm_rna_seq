@@ -8,7 +8,7 @@ output: pdf_document
 ```{r}
 all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
   filter(FDR < 0.05) |>
-  filter(str_starts(predictor_variable, "pm")) |>
+  filter(str_starts(predictor_variable, "bc")) |>
   distinct(gene, gene_symbol)
 ```
 
@@ -64,7 +64,7 @@ classicHima.fit <- classicHIMA(
 final_results <- data.frame()
 
 for (i in 1:141) {
-  pm_col <- paste0("pm_", i)
+  pm_col <- paste0("bc_", i)
   
   tryCatch({
     print(paste("Processing:", pm_col))
@@ -118,7 +118,7 @@ for (i in 1:141) {
 ```
 
 ```{r}
-write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_pm.csv")
+write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_bc.csv")
 ```
 
 
