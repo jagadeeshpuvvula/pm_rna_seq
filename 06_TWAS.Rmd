@@ -263,6 +263,62 @@ ggsave("~/Documents/air_polln_rna_seq/results/bc_rna_seq_result_first140days.tif
        height = 8)
 ```
 
+#twas summary exposure for yu-chin
+```{r}
+summary_export <- res_df |>
+    mutate(
+        air_pollutant = substr(predictor_variable, 1, 2),  # Extract first 2 characters
+        predictor_end = ifelse(
+            grepl("\\d+$", predictor_variable),  # Check if the string ends with numbers
+            regmatches(predictor_variable, regexpr("\\d+$", predictor_variable)),  # Extract numeric part
+            NA  # Set to NA if no numeric value at the end
+        )
+    ) |>
+    group_by(air_pollutant, gene_symbol) |>
+    summarise(
+        count = n(),
+        days_during_pregnancy = paste(na.omit(unique(predictor_end)), collapse = ","),  # Handle NA values gracefully
+        .groups = "drop"
+    ) |>
+    arrange(air_pollutant, gene_symbol)
+
+write_csv(summary_export, "~/Documents/air_polln_rna_seq/results/for_yu_chin/gene_names.csv")
+
+#summary plot
+ggplot(summary_export, aes(x = cut(count, breaks = seq(1, max(count) + 2, by = 2), include.lowest = TRUE, right = FALSE), 
+                           fill = air_pollutant)) +
+    geom_bar(stat = "count", position = "dodge", color = "black") +
+    geom_text(
+        aes(label = ..count..), 
+        stat = "count", 
+        position = position_dodge(width = 0.9), 
+        vjust = 0.4, 
+        hjust = -0.2,
+        size = 4,
+        angle = 90
+    ) +
+    labs(
+        title = " ",
+        x = "Number of hits during gestation (by 2 increments)",
+        y = "Frequency of genes associated with PM/BC exposures(log scale)",
+        fill = "Air pollutant exposure"
+    ) +
+    scale_y_continuous(trans = "log10", limits = c(1, 6000)) +  # Apply log scale to the y-axis
+    theme_minimal() +
+    theme(
+        axis.text.x = element_text(angle = 0, hjust = 0.5),  # Rotate x-axis labels
+        legend.position = "bottom"
+    )
+
+ggsave("~/Documents/air_polln_rna_seq/results/for_yu_chin/gene_frequency.tiff",
+       dpi=100,
+       bg="white",
+       width = 10,
+       height = 6)
+```
+
+
+
 #enrichment analysis
 #https://yulab-smu.top/biomedical-knowledge-mining-book/enrichment-overview.html
 ```{r}
