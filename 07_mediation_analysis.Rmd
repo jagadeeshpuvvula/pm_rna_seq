@@ -8,7 +8,7 @@ output: pdf_document
 ```{r}
 all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
   filter(FDR < 0.05) |>
-  filter(str_starts(predictor_variable, "bc")) |>
+  filter(str_starts(predictor_variable, "pm")) |>
   distinct(gene, gene_symbol)
 ```
 
@@ -121,4 +121,38 @@ for (i in 1:141) {
 write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_bc.csv")
 ```
 
+#visualizing mediation results
+```{r}
+med_res_bc<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_bc.csv") |>
+  mutate(air_pol = "black carbon")
+
+med_res_pm<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_pm.csv")|>
+  mutate(air_pol = "PM2.5")
+
+#filtered results where 
+mediation_res<- bind_rows(med_res_bc, med_res_pm) |>
+  filter(pmax < 0.001) |>
+  mutate(OR = exp(beta_hat)) |>
+  mutate(across(c(alpha_hat, beta_hat, IDE, OR), \(x) if(is.numeric(x)) round(x, 2) else x))|>
+  mutate(pmax = formatC(pmax, format = "e", digits = 1)) |>
+  #filter(OR<10) |>
+  group_by(Index) |>
+  select(c(8,7,1,2:4,6,9,5)) 
+
+rm(med_res_bc, med_res_pm)
+
+#There are 16 genes with FDR < 0.1% among these 5 are protective (3 related to BC and 2 - PM)
+#these genes with protective odds are of smaller magnitude range between 0.2-0.4
+#11 genes with higher odds for PTB are at higher magnitude (6 related to BC and 5 - PM), odds ratios ranged between 1.6-23.9
+#export results file
+write_csv(mediation_res, "~/Documents/air_polln_rna_seq/results/mediation_results_for_supplment.csv")
+
+
+#
+#visualization
+mediation_plt<- mediation_res |>
+  filter(n() > 1) |>
+  ungroup() 
+
+```
 
