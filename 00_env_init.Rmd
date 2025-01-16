@@ -6,8 +6,8 @@ output: pdf_document
 ---
 
 ```{r}
-library(pacman)
-pacman::p_load(tidyverse, janitor, dlmtree)
+library(pacman,)
+pacman::p_load(tidyverse, janitor, viridis, gridExtra, grid, lattice)
 #library(GEOquery)
 ```
 
