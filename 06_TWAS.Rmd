@@ -9,14 +9,14 @@ output: pdf_document
 #air pollution data - standardized to mean 0 and SD=1
 load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
 rm(list = setdiff(ls(), "ap_exposures"))
-pm1<- ap_exposures |>
+pm2<- ap_exposures |>
   select(subject_id, 
          matches("^pm_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$"),
          matches("^bc_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$")) |>
   mutate(across(
-    .cols = -subject_id, 
-    .fns = ~ scale(.x, center = TRUE, scale = TRUE)
-  )) |>
+  .cols = -subject_id, 
+  .fns = ~ log10(.x)
+)) |>
   clean_names()
 
 
@@ -221,21 +221,25 @@ res_df<- all_results |>
 
 #for PM2.5 only
 summary_table <- res_df |>
-  filter(str_starts(predictor_variable, "bc"))|>
-  group_by(gene_symbol) |>
+  filter(str_starts(predictor_variable, "pm"))|>
+  group_by(gene_symbol, logFC_sign = ifelse(logFC > 0, "upregulated", "downregulated")) |>
   summarise(
     count = n(),
     predictor_values_list = paste(predictor_variable, collapse = ", ")
   ) |>
   ungroup() |>
-  filter(count >= 20)
+  filter(count >= 7)
 
 filtered_res_df <- res_df |>
   filter(gene_symbol %in% summary_table$gene_symbol) |>
   mutate(
-    predictor_numeric = as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable))
+    predictor_numeric = as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable)),
+    predictor_prefix = substr(predictor_variable, 1, 2)  # Extract first two characters of predictor_variable
   ) |>
-  filter(str_starts(predictor_variable, "bc"))
+  group_by(gene_symbol, predictor_prefix) |>
+  filter(n() >= 30) |>
+  ungroup() |>
+  mutate(predictor_prefix = if_else(predictor_prefix == "pm", "PM2.5", "Black Carbon"))
 ```
 
 #visualize results
@@ -244,11 +248,14 @@ ggplot(filtered_res_df, aes(x = predictor_numeric, y = gene_symbol, fill = logFC
   geom_tile(color = "white") +
   scale_x_continuous(breaks = sort(unique(filtered_res_df$predictor_numeric)),
                      expand = c(0, 0)) +
-  scale_fill_gradient2(low = "red", mid = "white", high = "royalblue", midpoint = 0, name = "logFC") +
-  geom_vline(xintercept = 92.5, linetype = "dashed", color = "black") +
-  labs(x = "Black carbon exposure during gestation", y = "Gene") +
+  scale_fill_gradient2(low = "royalblue", mid = "white", high = "red", midpoint = 0, name = "logFC") +
+  facet_grid(predictor_prefix~., scales = "free_y")+
+  geom_vline(xintercept = 92.5, linetype = "dashed", linewidth=1, color = "black") +
+  labs(x = "Fine particulate matter exposure during gestation", y = "Gene") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0),
+        axis.text.y = element_text(angle = 0, face = "italic"),
+        strip.text = element_text(face = "bold"),
         legend.position = "bottom",
         legend.text = element_text(angle = 45, hjust = 1),
         legend.title = element_text(vjust = 1),
@@ -256,7 +263,7 @@ ggplot(filtered_res_df, aes(x = predictor_numeric, y = gene_symbol, fill = logFC
         panel.grid.major.x = element_blank(), 
         panel.grid.minor.x = element_blank() )
 
-ggsave("~/Documents/air_polln_rna_seq/results/bc_rna_seq_result_first140days.tiff",
+ggsave("~/Documents/air_polln_rna_seq/results/ap_rna_seq_result_first140days.tiff",
        dpi=300,
        bg="white",
        width = 14,

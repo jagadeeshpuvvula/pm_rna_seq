@@ -4,21 +4,32 @@ author: "Jagadeesh Puvvula"
 date: "2024-12-29"
 output: pdf_document
 ---
-
+#RNA-seq and metabolome variables with statistical significance
 ```{r}
-all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
+#RNA
+twas<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
   filter(FDR < 0.05) |>
   filter(str_starts(predictor_variable, "pm")) |>
   distinct(gene, gene_symbol)
+
+#metabolome
+metwas<- read_csv("~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas_anno.csv") |>
+  filter(fdr < 0.05) |>
+  filter(str_starts(variable, "pm")) |>
+  distinct(chem_id, chemical_name)
 ```
 
 #Clean RNAseq, exposure, covariate data
 ```{r}
 load("~/Documents/air_polln_rna_seq/crib_data/for_mediation_analy.rda")
 
+df_analysis<- df_analysis |>
+  select(c(1:12)) |>
+  left_join(pm2, by = "subject_id") #pm2 is from file: 06_TWAS
+
 #filtered genes that are significantly associated with air pollution
 rna_seq_med <- edge_df |>
-  filter(Gene %in% all_results$gene) |>
+  filter(Gene %in% twas$gene) |>
   t()
 
 # Set the first row as column names and remove it from the data
@@ -33,6 +44,45 @@ scaled_rna_seq_med <- scale(rna_seq_med_numeric)
 
 ```
 
+#Metabolome data
+```{r}
+metabo_linkage <- read_csv("~/Documents/air_polln_rna_seq/crib_data/metabolome_paired/metabolome_linkage.csv") |>
+  clean_names() |>
+  select(c(1,23)) |>
+  mutate(sample_description = sub("PCFSBDEB[1-4]$", "", sample_description))
+
+placenta_metabo <- read_csv("~/Documents/air_polln_rna_seq/crib_data/metabolome_paired/metabolome_conc.csv") |>
+  clean_names() |>
+  left_join(metabo_linkage, by="parent_sample_name") |>
+  mutate(sample_description = as.numeric(sample_description)) |> 
+  rename(subject_id = sample_description) |> 
+  select(subject_id, everything()) |>
+  select(-c(2)) |>
+  mutate(across(2:last_col(), ~ log10(. + 0.00001))) |>
+  mutate(across(2:last_col(), ~ (. - mean(.)) / sd(.))) |>
+  select(-where(~any(is.na(.)))) |>
+  filter(subject_id %in% df_analysis$subject_id) |>
+  (\(df) {
+    relevant_names <- names(df)[gsub("^x", "", names(df)) %in% metwas$chem_id]
+    select(df, subject_id, all_of(relevant_names))
+  })() |>
+  column_to_rownames("subject_id") |>
+  as.matrix()
+```
+
+#combine RNA-seq and metabolite into a single matrix
+```{r}
+# Ensure row names are aligned
+common_samples <- intersect(rownames(scaled_rna_seq_med), rownames(placenta_metabo))
+
+# Subset both matrices to include only common samples
+scaled_rna_seq_med_matched <- scaled_rna_seq_med[common_samples, , drop = FALSE]
+placenta_metabo_matched <- placenta_metabo[common_samples, , drop = FALSE]
+
+# Combine into a single matrix
+combined_matrix <- cbind(scaled_rna_seq_med_matched, placenta_metabo_matched)
+```
+
 #mediation analysis
 #alpha_hat: coefficient estimates of exposure (X) –> mediators (M) (adjusted for covariates).
 #alpha_se: standard error for alpha.
@@ -45,7 +95,7 @@ scaled_rna_seq_med <- scale(rna_seq_med_numeric)
 classicHima.fit <- classicHIMA(
   X = as.numeric(df_analysis$pm_26),
   Y = as.factor(df_analysis$ptb),
-  M = scaled_rna_seq_med,
+  M = combined_matrix,
   #COV.XM = df_analysis[, c("ga_at_delivery", "maternal_age")],
   #COV.MY = df_analysis[, c("ga_at_delivery", "maternal_age")],
   penalty = c("lasso"),
@@ -64,17 +114,19 @@ classicHima.fit <- classicHIMA(
 final_results <- data.frame()
 
 for (i in 1:141) {
-  pm_col <- paste0("bc_", i)
+  pm_col <- paste0("pm_", i)
   
   tryCatch({
     print(paste("Processing:", pm_col))
     
-    result <- classicHIMA(
+    result <- hima_classic(
       X = as.numeric(df_analysis[[pm_col]]),
       Y = as.factor(df_analysis$ptb),
-      M = scaled_rna_seq_med,
+      M = combined_matrix,
+      #COV.XM = df_analysis[, c("ga_at_delivery", "maternal_age")],
       penalty = c("lasso"),
       Y.type = "binary",
+      M.type = "gaussian",
       Bonfcut = 0.05,
       scale = TRUE,
       verbose = TRUE,
@@ -118,15 +170,15 @@ for (i in 1:141) {
 ```
 
 ```{r}
-write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_bc.csv")
+write_csv(final_results, "~/Documents/air_polln_rna_seq/results/mediation_pm_log10_scale.csv")
 ```
 
 #visualizing mediation results
 ```{r}
-med_res_bc<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_bc.csv") |>
+med_res_bc<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_bc_log10_scale.csv") |>
   mutate(air_pol = "black carbon")
 
-med_res_pm<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_pm.csv")|>
+med_res_pm<- read_csv("~/Documents/air_polln_rna_seq/results/mediation_pm_log10_scale.csv")|>
   mutate(air_pol = "PM2.5")
 
 #filtered results where 

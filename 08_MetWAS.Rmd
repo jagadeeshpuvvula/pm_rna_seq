@@ -122,7 +122,8 @@ write_csv(res_df, "~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas
 res_df<- read_csv("~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas_anno.csv")
 
 summary_df <- res_df |>
-  filter(beta_dir %in% c("negative-significant", "positive-significant")) |>
+  #filter(beta_dir %in% c("negative-significant", "positive-significant")) |>
+  filter(fdr<0.05) |>
   group_by(variable, super_pathway, sub_pathway, beta_dir) |>
   summarise(count = n(), .groups = "drop") |>
   filter(count>1) |>
@@ -190,9 +191,9 @@ create_pathway_plot <- function(data, pathway) {
   ggplot(subset_data, aes(x = estimate, y = sub_pathway)) +
     geom_point(
       aes(color = case_when(
-        fdr >= 0.2 ~ "lightgray",
-        fdr < 0.2 & estimate > 0 ~ "blue",
-        fdr < 0.2 & estimate < 0 ~ "red",
+        fdr >= 0.05 ~ "lightgray",
+        fdr < 0.05 & estimate > 0 ~ "blue",
+        fdr < 0.05 & estimate < 0 ~ "red",
         TRUE ~ "lightgray"
       )), 
       size = 0.5, 
@@ -265,16 +266,18 @@ res_df<- read_csv("~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas
 
 #summary of results
 summary_df <- res_df |>
-  filter(beta_dir %in% c("negative-significant", "positive-significant")) |>
+  #filter(beta_dir %in% c("negative-significant", "positive-significant")) |>
+  filter(fdr<0.05) |>
   mutate(prefix = ifelse(grepl("^pm_", variable), "pm_", 
                          ifelse(grepl("^bc_", variable), "bc_", NA))) |>
   filter(!is.na(prefix)) |>
   group_by(chemical_name, super_pathway, sub_pathway, prefix) |>
   summarise(count = n(), .groups = "drop") |>
-  filter(count > 4)
+  filter(count > 1)
 
 viz_df<- res_df |>
-  filter(beta_dir %in% c("negative-significant", "positive-significant"))|>
+  #filter(beta_dir %in% c("negative-significant", "positive-significant"))|>
+  filter(fdr<0.05) |>
   mutate(exposure = case_when(
     str_starts(variable, "bc") ~ "Black carbon",
     str_starts(variable, "pm") ~ "PM2.5",
@@ -313,9 +316,10 @@ ggplot(viz_df, aes(x = exposure_window, y = chemical_name, fill = estimate)) +
              switch = "both",
              labeller = label_wrap_gen(width = 15)) +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, color="black"),
+        axis.text.y = element_text(size=11, color="black"),
         legend.position = "bottom",
-        legend.text = element_text(angle = 45, hjust = 1),
+        legend.text = element_text(angle = 45, hjust = 1, color="black"),
         legend.title = element_text(vjust = 1),
         legend.key.height = unit(0.3, "cm"),
         panel.grid.major.x = element_blank(), 
@@ -326,6 +330,38 @@ ggplot(viz_df, aes(x = exposure_window, y = chemical_name, fill = estimate)) +
 ggsave("~/Documents/air_polln_rna_seq/results/lm_MetWAS/mwas_metabolite.tiff",
        dpi=300,
        bg="white",
-       width = 6,
-       height = 8)
+       width = 10,
+       height = 12)
 ```
+
+#export metabolite list for yu-chin
+```{r}
+df_annotations_link <- df_annotations |>
+  select(c(11,13:17)) |>
+  mutate(pubchem = as.character(pubchem))
+
+res_df<- read_csv("~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas_anno.csv")  |>
+  filter(fdr < 0.20)|>
+  mutate(
+        air_pollutant = substr(variable, 1, 2),  # Extract first 2 characters
+        predictor_end = ifelse(
+            grepl("\\d+$", variable),  # Check if the string ends with numbers
+            regmatches(variable, regexpr("\\d+$", variable)),  # Extract numeric part
+            NA  # Set to NA if no numeric value at the end
+        )
+    ) |>
+    group_by(air_pollutant, chemical_name, chem_id) |>
+    summarise(
+        count = n(),
+        days_during_pregnancy = paste(na.omit(unique(predictor_end)), collapse = ","),  # Handle NA values gracefully
+        .groups = "drop"
+    ) |>
+    arrange(air_pollutant, chemical_name, chem_id) |>
+  left_join(df_annotations_link, by="chemical_name") |>
+  select(c(1,4,5,2,3,6:10))
+
+write_csv(res_df, "~/Documents/air_polln_rna_seq/results/for_yu_chin/placenta_MetWAS_anno_fdr_20pct.csv")
+```
+
+
+

@@ -1,0 +1,142 @@
+---
+title: "06.1_TWAS_ipa_viz"
+author: "Jagadeesh Puvvula"
+date: "2025-02-12"
+output: pdf_document
+---
+
+
+```{r}
+ipa_res <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/ipa_7_hits_combined.csv")
+
+pathway_grp <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/ipa_grouping.csv")
+
+df_viz<- ipa_res |>
+  left_join(pathway_grp, by = "Ingenuity Canonical Pathways") |>
+  #filter(IPA_group == "Cellular Immune Response") |>
+  select(c(1,8,2,7,6))
+```
+
+#overlapping pathways between PM and BC
+```{r}
+cat("Pathways overlapped between BC and PM (",
+    df_viz |> count(`Ingenuity Canonical Pathways`) |> filter(n > 1) |> nrow(),
+    "): ",
+    df_viz |> count(`Ingenuity Canonical Pathways`) |> filter(n > 1) |> pull(`Ingenuity Canonical Pathways`) |> paste(collapse = ", "),
+    "\n",
+    sep = ""
+)
+```
+
+#gene that is frequently present in pathways
+```{r}
+x<-df_viz |> 
+  separate_rows(Molecules, sep = ",") |> 
+  group_by(exp, Molecules) |> 
+  summarise(
+    pathway_count = n_distinct(`Ingenuity Canonical Pathways`),
+    pathway_list = paste(unique(`Ingenuity Canonical Pathways`), collapse = ", ")
+  ) |> 
+  ungroup()
+```
+
+#table 2 and plot
+```{r}
+y<- 
+df_viz |> 
+  group_by(exp, IPA_group) |> 
+  summarise(
+    pathway_count = n_distinct(`Ingenuity Canonical Pathways`),
+    pathway_list = paste(unique(`Ingenuity Canonical Pathways`), collapse = ", "),
+    .groups = "drop"
+  ) |> 
+  arrange(desc(grepl("^PM", IPA_group)), desc(pathway_count))
+```
+
+#sankey diagram
+```{r}
+map_viz <- df_viz |> select(-c(4))
+
+reduced_functional_df <- map_viz |>
+  clean_names() |>
+  select(-c(ratio)) |>
+  rename(ontology = exp,
+         parent_term = ipa_group,
+         combined_term = ingenuity_canonical_pathways) |>
+  drop_na()
+```
+
+```{r}
+library(dplyr)
+library(networkD3)
+library(RColorBrewer)
+
+# Prepare the data and count occurrences of parent terms
+links <- reduced_functional_df %>%
+  group_by(ontology, parent_term) %>%
+  summarise(value = n(), .groups = 'drop') %>%
+  mutate(source = ontology,
+         target = parent_term) %>%
+  select(source, target, value)
+
+# Get unique parent terms
+parent_terms <- unique(links$target)
+
+# Create a color palette for parent terms
+num_colors <- length(parent_terms)
+color_palette <- colorRampPalette(brewer.pal(min(9, num_colors), "Set3"))(num_colors)
+
+# Assign colors to parent terms
+color_map <- setNames(color_palette, parent_terms)
+
+# Create nodes data frame with counts and colors for parent terms
+nodes <- bind_rows(
+  links %>% group_by(source) %>% summarise(name = first(source), count = sum(value), color = "grey"),
+  links %>% group_by(target) %>% summarise(name = first(target), count = sum(value), color = color_map[first(target)])
+) %>%
+  distinct(name, .keep_all = TRUE) %>%
+  arrange(desc(count)) %>%
+  mutate(id = row_number() - 1)  # Create ordered IDs
+
+# Update links with new IDs and colors
+links <- links %>%
+  left_join(nodes %>% select(name, id), by = c("source" = "name")) %>%
+  rename(source_id = id) %>%
+  left_join(nodes %>% select(name, id, color), by = c("target" = "name")) %>%
+  rename(target_id = id) %>%
+  select(source = source_id, target = target_id, value, color)
+
+# Create the Sankey diagram
+sankey_diagram <- sankeyNetwork(Links = links, Nodes = nodes, 
+                                Source = "source", Target = "target", 
+                                Value = "value", NodeID = "name", 
+                                LinkGroup = "color", NodeGroup = "color",
+                                sinksRight = FALSE, fontSize = 13.5)
+
+# Display the diagram
+sankey_diagram
+```
+
+```{r}
+library(webshot2)
+library(magick)
+
+# First, save the Sankey diagram as an HTML file in a temporary location
+temp_html <- tempfile(fileext = ".html")
+htmlwidgets::saveWidget(sankey_diagram, temp_html, selfcontained = TRUE)
+
+# Use webshot2 to capture the HTML as a high-resolution PNG
+temp_png <- tempfile(fileext = ".png")
+webshot(temp_html, temp_png, 
+        vwidth = 1000, vheight = 1200, zoom = 2)
+
+# Convert PNG to TIFF using magick
+image_read(temp_png) %>%
+  image_convert(format = "tiff") %>%
+  image_write("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/sankey.tiff")
+
+# Clean up temporary files
+file.remove(temp_html)
+file.remove(temp_png)
+```
+

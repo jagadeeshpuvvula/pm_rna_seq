@@ -165,7 +165,7 @@ df_analysis<- df |>
            bmi)
          ) |>
   select(-c(2,6:10)) |>
-  mutate(delivery_date = mdy(delivery_date),
+  mutate((delivery_date = mdy(delivery_date),
          delivery_mode = str_replace_all(delivery_mode, "C-?Section", "C-section"),
          parity = replace_na(parity, "parus"),education = case_when(
            education %in% c("Less than High School", "Completed High school", 
