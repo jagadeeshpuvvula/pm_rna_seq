@@ -1,0 +1,100 @@
+---
+title: "09_exp_summaries"
+author: "Jagadeesh Puvvula"
+date: "2025-02-27"
+output: pdf_document
+---
+
+```{r}
+load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
+rm(list = setdiff(ls(), "ap_exposures"))
+
+ap_exposures<- ap_exposures |>
+  select(matches("^pm_[1-9][0-9]?$|^pm_1[0-3][0-9]$|^pm_14[0-1]$|^bc_[1-9][0-9]?$|^bc_1[0-3][0-9]$|^bc_14[0-1]$"))
+
+names(ap_exposures)
+```
+
+#correlation matrix
+```{r}
+desired_order <- c(paste0("pm_", 1:141), paste0("bc_", 1:141))
+
+cormat <- round(x=cor(ap_exposures, method = "spearman", use = "complete.obs"), digits = 2) |>
+  melt() |> 
+  clean_names() |>
+  mutate_at(vars(var1, var2), ~factor(., levels = rev(desired_order))) 
+```
+
+```{r}
+ggplot(cormat, aes(x = var2, y = var1, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white",
+                       midpoint = 0, limit = c(-1, 1), space = "Lab",
+                       name = "Spearman Correlation coefficient") +
+  theme_minimal() +
+  theme(#axis.text = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 1, size = 3, hjust = 0, color = "black"),
+        axis.text.y = element_text(angle = 0, vjust = 0.5, size = 3, hjust = 0, color = "black"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "bottom", legend.box = "horizontal") + 
+  geom_vline(xintercept = c(141), color = "black", linewidth = 0.5) +
+  geom_hline(yintercept = c( 141), color = "black", linewidth = 0.5)
+
+```
+
+```{r}
+ggsave("~/Documents/air_polln_rna_seq/crib_data/combined_corrplt.tiff",
+       width=14, height= 14, dpi=300, bg="white")
+```
+
+#distribution
+```{r}
+summary <- ap_exposures |>
+  pivot_longer(cols = everything(), names_to = "measure", values_to = "value") |>
+  group_by(measure) |>
+  summarise(
+    median = median(value, na.rm = TRUE),
+    q25 = quantile(value, 0.25, na.rm = TRUE),
+    q75 = quantile(value, 0.75, na.rm = TRUE)
+  ) |>
+  mutate(
+    indicator = ifelse(startsWith(measure, "BC"), "BC", "PM"),
+    measure = sub("^BC_", "", measure),  # Remove "BC_" from the start of the measure
+    measure = sub("^PM_", "", measure)  # Remove "PM_" from the start of the measure
+  )
+```
+
+```{r}
+ggplot(summary, aes(y = factor(measure, levels = 141:1), x = median, xmin = q25, xmax = q75)) +
+    geom_pointrange(aes(col = indicator), position = position_dodge(width = 0.5), size = 0.25) +
+  facet_grid(.~indicator, scale="free")+
+    ylab("") +
+    ggtitle("") +
+    xlab("") +
+    theme_bw() +
+    theme(
+      panel.border = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line.x = element_line(colour = "black"),
+      axis.line.y = element_blank(),
+      axis.text.x = element_text(size=8, angle = 45, hjust=1, color = "black"),
+      axis.text.y = element_text(size=6, color= "black"),
+      axis.ticks.y = element_blank(),
+      legend.position = "none",
+      strip.text.x = element_text(size = 10, angle = 0),
+      strip.placement = "top",
+      strip.background = element_rect(fill = "transparent", colour = "transparent")
+    )
+```
+
+```{r}
+ggsave("~/Documents/air_polln_rna_seq/exposure_dist.tiff",
+       width=8, height= 12, dpi=300, bg="white")
+```
+
