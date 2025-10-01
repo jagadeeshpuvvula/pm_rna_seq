@@ -1,0 +1,223 @@
+---
+title: "11_ctd"
+author: "Jagadeesh Puvvula"
+date: "2025-05-01"
+output: html_document
+---
+
+#query CTD databased (Apr 2025 release) downloaded from: https://ctdbase.org/downloads/ on May 1, 2025
+```{r}
+library(xml2)
+library(purrr)
+library(dplyr)
+
+# Open gzipped file
+con <- gzfile("~/Documents/air_polln_rna_seq/CTD_chem_gene_ixns.xml.gz", "r")
+
+# Skip lines until <RowSet>
+repeat {
+  line <- readLines(con, n = 1)
+  if (length(line) == 0) stop("Reached EOF before finding <RowSet>")
+  if (grepl("<RowSet>", line)) break
+}
+
+matched_rows <- list()
+current_row <- c()
+
+repeat {
+  line <- readLines(con, n = 1)
+  if (length(line) == 0 || grepl("</RowSet>", line)) break
+
+  current_row <- c(current_row, line)
+
+  if (grepl("</Row>", line)) {
+    row_text <- paste(current_row, collapse = "\n")
+    current_row <- c()
+
+    # Wrap it as full XML so we can parse it
+    row_xml <- read_xml(paste0("<RowSet>", row_text, "</RowSet>"))
+    row <- xml_find_first(row_xml, ".//Row")
+
+    # Extract key fields
+    values <- xml_children(row)
+    named <- setNames(xml_text(values), xml_name(values))
+
+    # Safely check if keys exist before accessing them
+    if (
+      #"ChemicalName" %in% names(named) &&  named[["ChemicalName"]] %in% c("Air Pollutants",   "Particulate Matter", "Polycyclic Aromatic Hydrocarbons",  "Benzo(a)pyrene", "Smoke") &&
+      "GeneForms" %in% names(named) && named[["GeneForms"]] == "gene" &&
+      "OrganismID" %in% names(named) && named[["OrganismID"]] == "9606" &&
+      "GeneSymbol" %in% names(named) && named[["GeneSymbol"]] %in% 
+      c("TRDC", "TP53INP2", "SPRR3", "SLC16A11", "SEL1L2", "RN7SL3",
+        "PRTN3", "OXTR", "OSM", "NPNT", "NCR3", "MPO", "MAP3K19",
+        "LYPD2", "KIR2DL4", "IGKC", "IGHV3-30", "HACD1", "GZMB",
+        "GNRH2", "GNLY", "ELANE", "DUSP13", "CXCL8", "CHRNA3",
+        "CCDC141", "AZU1", "APOA5")
+    ) {
+      matched_rows[[length(matched_rows) + 1]] <- named
+    }
+  }
+}
+
+close(con)
+
+# Convert to data frame
+df_filtered <- bind_rows(matched_rows)
+```
+
+#online query
+```{r}
+# Install and load necessary packages
+if (!require("httr")) install.packages("httr")
+if (!require("xml2")) install.packages("xml2")
+if (!require("rvest")) install.packages("rvest")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("purrr")) install.packages("purrr")
+if (!require("tidyr")) install.packages("tidyr")
+
+library(httr)
+library(xml2)
+library(rvest)
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# The base URL for the CTD database
+base_url <- "https://ctdbase.org/query.go"
+
+# List of genes to query
+genes <- c("TRDC", "TP53INP2", "SPRR3", "SLC16A11", "SEL1L2", "RN7SL3",
+           "PRTN3", "OXTR", "OSM", "NPNT", "NCR3", "MPO", "MAP3K19",
+           "LYPD2", "KIR2DL4", "IGKC", "IGHV3-30", "HACD1", "GZMB",
+           "GNRH2", "GNLY", "ELANE", "DUSP13", "CXCL8", "CHRNA3",
+           "CCDC141", "AZU1", "APOA5")
+
+# Function to extract data for a single gene
+get_gene_data <- function(gene) {
+  cat("Fetching data for gene:", gene, "\n")
+  
+  # Construct the URL with parameters
+  url <- paste0(
+    base_url,
+    "?type=ixn",
+    "&chemqt=equals",
+    "&chem=",
+    "&actionDegreeTypes=increases",
+    "&actionDegreeTypes=decreases",
+    "&actionDegreeTypes=affects",
+    "&actionTypes=ANY",
+    "&geneqt=equals",
+    "&gene=name:", gene,
+    "&geneFormTypes=gene",
+    "&pathwayqt=equals",
+    "&pathway=",
+    "&taxonqt=equals",
+    "&taxon=TAXON:9606",
+    "&goqt=equals",
+    "&go=",
+    "&sort=chemNmSort",
+    "&perPage=50",
+    "&action=Search"
+  )
+  
+  # Make the request
+  response <- GET(url)
+  
+  # Initialize an empty dataframe for this gene
+  gene_data <- data.frame()
+  
+  # Check if the request was successful
+  if (status_code(response) == 200) {
+    # Parse the HTML response
+    html_content <- content(response, "text")
+    doc <- read_html(html_content)
+    
+    # Extract the table - CTD usually presents results in a table with id="ixnList"
+    table_nodes <- html_nodes(doc, "table#ixnList")
+    
+    if (length(table_nodes) > 0) {
+      # Extract the table data
+      gene_data <- html_table(table_nodes, fill = TRUE)[[1]]
+      
+      # Add the gene name as a column for reference
+      gene_data$queried_gene <- gene
+      
+    } else {
+      # If the expected table is not found, try all tables
+      all_tables <- html_table(doc, fill = TRUE)
+      
+      # Find the table that most likely contains the interaction data
+      # This is a heuristic approach - looking for tables with relevant columns
+      potential_tables <- list()
+      
+      for (i in seq_along(all_tables)) {
+        table <- all_tables[[i]]
+        if (ncol(table) >= 3) {  # Assuming meaningful tables have at least 3 columns
+          # Look for tables with column names that might indicate it's the interaction table
+          col_names <- tolower(names(table))
+          if (any(grepl("chemical|gene|interaction|action", col_names))) {
+            potential_tables[[length(potential_tables) + 1]] <- table
+          }
+        }
+      }
+      
+      if (length(potential_tables) > 0) {
+        # Use the largest table as it's most likely to be the main results table
+        gene_data <- potential_tables[[which.max(sapply(potential_tables, nrow))]]
+        gene_data$queried_gene <- gene
+      } else {
+        cat("No suitable tables found for gene:", gene, "\n")
+        gene_data <- data.frame(queried_gene = gene, result = "No data found")
+      }
+    }
+  } else {
+    cat("Request failed for gene:", gene, "with status code:", status_code(response), "\n")
+    gene_data <- data.frame(queried_gene = gene, result = paste("Request failed with status", status_code(response)))
+  }
+  
+  # Add a small delay to avoid overloading the server
+  Sys.sleep(1)
+  
+  return(gene_data)
+}
+
+# Use safely to handle potential errors in the API calls
+safe_get_gene_data <- safely(get_gene_data)
+
+# Get data for all genes and combine into a single dataframe
+results <- map(genes, safe_get_gene_data)
+
+# Extract the results and handle errors
+combined_data <- list()
+for (i in seq_along(results)) {
+  if (!is.null(results[[i]]$result) && nrow(results[[i]]$result) > 0) {
+    combined_data[[i]] <- results[[i]]$result
+  } else {
+    error_msg <- if (!is.null(results[[i]]$error)) results[[i]]$error$message else "Unknown error"
+    combined_data[[i]] <- data.frame(queried_gene = genes[i], result = paste("Error:", error_msg))
+  }
+}
+
+# Combine all results into a single dataframe
+all_genes_data <- bind_rows(combined_data)
+
+# Clean column names
+names(all_genes_data) <- gsub("\\s+", "_", names(all_genes_data))
+
+# Display the summary of the results
+cat("\nSummary of results:\n")
+summary_table <- all_genes_data %>%
+  group_by(queried_gene) %>%
+  summarize(
+    num_interactions = n(),
+    .groups = "drop"
+  )
+
+gene_summary<- all_genes_data |> drop_na(Interacting_Gene)
+
+write_csv(gene_summary, "~/Documents/air_polln_rna_seq/gene_summary_ctd.csv")
+```
+
+
+
+
