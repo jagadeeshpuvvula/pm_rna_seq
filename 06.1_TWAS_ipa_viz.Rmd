@@ -7,136 +7,338 @@ output: pdf_document
 
 
 ```{r}
-ipa_res <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/ipa_7_hits_combined.csv")
+library(tidyverse)
+library(janitor)
 
-pathway_grp <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/ipa_grouping.csv")
 
-df_viz<- ipa_res |>
-  left_join(pathway_grp, by = "Ingenuity Canonical Pathways") |>
-  #filter(IPA_group == "Cellular Immune Response") |>
-  select(c(1,8,2,7,6))
-```
-
-#overlapping pathways between PM and BC
-```{r}
-cat("Pathways overlapped between BC and PM (",
-    df_viz |> count(`Ingenuity Canonical Pathways`) |> filter(n > 1) |> nrow(),
-    "): ",
-    df_viz |> count(`Ingenuity Canonical Pathways`) |> filter(n > 1) |> pull(`Ingenuity Canonical Pathways`) |> paste(collapse = ", "),
-    "\n",
-    sep = ""
-)
-```
-
-#gene that is frequently present in pathways
-```{r}
-x<-df_viz |> 
-  separate_rows(Molecules, sep = ",") |> 
-  group_by(exp, Molecules) |> 
-  summarise(
-    pathway_count = n_distinct(`Ingenuity Canonical Pathways`),
-    pathway_list = paste(unique(`Ingenuity Canonical Pathways`), collapse = ", ")
-  ) |> 
-  ungroup()
-```
-
-#table 2 and plot
-```{r}
-y<- 
-df_viz |> 
-  group_by(exp, IPA_group) |> 
-  summarise(
-    pathway_count = n_distinct(`Ingenuity Canonical Pathways`),
-    pathway_list = paste(unique(`Ingenuity Canonical Pathways`), collapse = ", "),
-    .groups = "drop"
-  ) |> 
-  arrange(desc(grepl("^PM", IPA_group)), desc(pathway_count))
-```
-
-#sankey diagram
-```{r}
-map_viz <- df_viz |> select(-c(4))
-
-reduced_functional_df <- map_viz |>
+#~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_fdr_summary.csv
+# Read and preprocess the data
+ipa_res <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_fdr_summary.csv") |>
   clean_names() |>
-  select(-c(ratio)) |>
-  rename(ontology = exp,
-         parent_term = ipa_group,
-         combined_term = ingenuity_canonical_pathways) |>
-  drop_na()
+  select(ingenuity_canonical_pathways, sub_pathway, exposure, molecules) 
+
+# Function to clean and split molecules from different formats
+clean_molecules <- function(molecules_text) {
+  if (is.na(molecules_text) || molecules_text == "") {
+    return(character(0))
+  }
+  
+  if (str_detect(molecules_text, "^c\\(")) {
+    mol_text <- str_replace(molecules_text, "^c\\(|\\)$", "")
+    molecules <- str_split(mol_text, ",")[[1]] |>
+      str_replace_all('"', '') |>
+      str_trim()
+  } else {
+    molecules <- str_split(molecules_text, ",")[[1]] |>
+      str_trim()
+  }
+  
+  return(molecules)
+}
+
+# Process and transform the data
+ipa_summary <- ipa_res |>
+  mutate(molecules_list = map(molecules, clean_molecules)) |>
+  group_by(sub_pathway, exposure) |>
+  summarize(
+    molecules = list(unique(unlist(molecules_list))),
+    pathway_count = n_distinct(ingenuity_canonical_pathways),
+    .groups = "drop"
+  ) |>
+  mutate(
+    molecules_string = map_chr(molecules, ~paste(sort(.x), collapse = ", ")),
+    molecule_count = map_int(molecules, length)
+  ) |>
+  arrange(sub_pathway, exposure) |>
+  select(sub_pathway, exposure, molecules_string, molecule_count, pathway_count)
+
+
+# Optional: Save the result to a file (commented out)
+write_csv(ipa_summary, "~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_for_viz_fdr.csv")
 ```
 
+#for article text
 ```{r}
-library(dplyr)
-library(networkD3)
-library(RColorBrewer)
+ipa_summary<- read_csv("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_for_viz_fdr.csv")
 
-# Prepare the data and count occurrences of parent terms
-links <- reduced_functional_df %>%
-  group_by(ontology, parent_term) %>%
-  summarise(value = n(), .groups = 'drop') %>%
-  mutate(source = ontology,
-         target = parent_term) %>%
-  select(source, target, value)
 
-# Get unique parent terms
-parent_terms <- unique(links$target)
+ipa_summary <- ipa_res |>
+  drop_na()|>
+  mutate(molecules_list = map(molecules, clean_molecules)) |>
+  group_by(sub_pathway, exposure) |>
+  summarize(
+    molecules = list(unique(unlist(molecules_list))),
+    pathway_names = list(unique(ingenuity_canonical_pathways)),
+    pathway_count = n_distinct(ingenuity_canonical_pathways),
+    .groups = "drop"
+  ) |>
+  mutate(
+    molecules_string = map_chr(molecules, ~paste(sort(.x), collapse = ", ")),
+    molecule_count = map_int(molecules, length),
+    pathways_string = map_chr(pathway_names, ~paste(sort(.x), collapse = ", "))
+  ) |>
+  arrange(sub_pathway, exposure) |>
+  select(sub_pathway, exposure, molecules_string, molecule_count, pathway_count, pathways_string)
 
-# Create a color palette for parent terms
-num_colors <- length(parent_terms)
-color_palette <- colorRampPalette(brewer.pal(min(9, num_colors), "Set3"))(num_colors)
 
-# Assign colors to parent terms
-color_map <- setNames(color_palette, parent_terms)
+bc_ipa_summ<- ipa_summary |> filter(
+  exposure == "PM2.5",
+  #sub_pathway %in% c("Cellular Stress and Injury"))
+  #sub_pathway %in% c("Cellular Immune Response", "Cellular Stress and Injury"))
+  sub_pathway %in% c("Organismal Growth and Development", 
+                     "Cellular Growth, Proliferation and Development",
+                     "Cellular Stress and Injury"))
 
-# Create nodes data frame with counts and colors for parent terms
-nodes <- bind_rows(
-  links %>% group_by(source) %>% summarise(name = first(source), count = sum(value), color = "grey"),
-  links %>% group_by(target) %>% summarise(name = first(target), count = sum(value), color = color_map[first(target)])
-) %>%
-  distinct(name, .keep_all = TRUE) %>%
-  arrange(desc(count)) %>%
-  mutate(id = row_number() - 1)  # Create ordered IDs
+common_molecules <- bc_ipa_summ |>
+  pull(molecules_string) |>
+  strsplit(",\\s*") |>
+  reduce(intersect) |>
+  sort()
 
-# Update links with new IDs and colors
-links <- links %>%
-  left_join(nodes %>% select(name, id), by = c("source" = "name")) %>%
-  rename(source_id = id) %>%
-  left_join(nodes %>% select(name, id, color), by = c("target" = "name")) %>%
-  rename(target_id = id) %>%
-  select(source = source_id, target = target_id, value, color)
+common_molecules_string <- paste(common_molecules, collapse = ", ")
 
-# Create the Sankey diagram
-sankey_diagram <- sankeyNetwork(Links = links, Nodes = nodes, 
-                                Source = "source", Target = "target", 
-                                Value = "value", NodeID = "name", 
-                                LinkGroup = "color", NodeGroup = "color",
-                                sinksRight = FALSE, fontSize = 13.5)
-
-# Display the diagram
-sankey_diagram
 ```
 
+
+#sankey with plotly - run in python
+```{python}
+import pandas as pd
+import plotly.graph_objects as go
+import textwrap
+
+# Read the CSV file
+ipa_summary = pd.read_csv("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_for_viz_fdr.csv")
+
+# Helper function for wrapping text
+def wrap_text(text, width=15):
+    if pd.isna(text) or text == "":
+        return ""
+    return "<br>".join(textwrap.wrap(str(text), width=width))
+
+# Helper function for formatting exposure names
+def format_exposure_name(exposure):
+    if exposure == 'pm':
+        # Use HTML subscript for "2.5"
+        return 'PM<sub>2.5</sub>'
+    elif exposure == 'bc':
+        return 'Black Carbon'
+    else:
+        return exposure
+
+# Prepare nodes with positions
+# Create separate dataframes for each level
+exposure_nodes = ipa_summary['exposure'].astype(str).unique()
+sub_pathway_nodes = ipa_summary['sub_pathway'].astype(str).unique()
+molecules_nodes = ipa_summary['molecules_string'].astype(str).unique()
+
+# Create nodes dataframe
+nodes_data = []
+node_id = 0
+
+# Add exposure nodes
+exposure_node_map = {}
+for exp in exposure_nodes:
+    formatted_exp = format_exposure_name(exp)
+    exposure_node_map[exp] = node_id
+    nodes_data.append({
+        'id': node_id, 
+        'name': exp, 
+        'level': 'exposure', 
+        'x': 0,
+        'label': wrap_text(formatted_exp, width=55)
+    })
+    node_id += 1
+
+# Add sub_pathway nodes
+sub_pathway_node_map = {}
+for pathway in sub_pathway_nodes:
+    sub_pathway_node_map[pathway] = node_id
+    nodes_data.append({
+        'id': node_id, 
+        'name': pathway, 
+        'level': 'sub_pathway', 
+        'x': 0.5,
+        'label': wrap_text(pathway, width=55)
+    })
+    node_id += 1
+
+# Add molecules nodes
+molecules_node_map = {}
+for mol in molecules_nodes:
+    molecules_node_map[mol] = node_id
+    nodes_data.append({
+        'id': node_id, 
+        'name': mol, 
+        'level': 'molecules_string', 
+        'x': 1,
+        'label': wrap_text(mol, width=55)
+    })
+    node_id += 1
+
+# Add dummy node
+dummy_node_id = node_id
+nodes_data.append({
+    'id': dummy_node_id, 
+    'name': '', 
+    'level': 'dummy', 
+    'x': 1.1,
+    'label': ''
+})
+
+# Convert nodes to DataFrame
+nodes_df = pd.DataFrame(nodes_data)
+
+# Create links
+links_data = []
+
+# First set of links: exposure to sub_pathway
+for _, row in ipa_summary.iterrows():
+    links_data.append({
+        'source': exposure_node_map[str(row['exposure'])],
+        'target': sub_pathway_node_map[str(row['sub_pathway'])],
+        'value': row['pathway_count'],
+        'exposure': row['exposure'],
+        'color': '#aec7e8' if row['exposure'] == 'bc' else '#ffbb78' if row['exposure'] == 'pm' else '#cccccc'
+    })
+
+# Second set of links: sub_pathway to molecules
+for _, row in ipa_summary.iterrows():
+    links_data.append({
+        'source': sub_pathway_node_map[str(row['sub_pathway'])],
+        'target': molecules_node_map[str(row['molecules_string'])],
+        'value': row['molecule_count'],
+        'exposure': row['exposure'],
+        'color': '#aec7e8' if row['exposure'] == 'bc' else '#ffbb78' if row['exposure'] == 'pm' else '#cccccc'
+    })
+
+# Add dummy links from molecules to dummy node
+for mol_id in molecules_node_map.values():
+    links_data.append({
+        'source': mol_id,
+        'target': dummy_node_id,
+        'value': 1e-10,
+        'exposure': None,
+        'color': 'white'
+    })
+
+# Convert links to DataFrame
+links_df = pd.DataFrame(links_data)
+
+# Create Sankey diagram
+fig = go.Figure(data=[go.Sankey(
+    node=dict(
+        pad=15,
+        thickness=20,
+        line=dict(color='black', width=0.5),
+        label=nodes_df['label'],
+        x=nodes_df['x'],
+        color='#dddddd'  # Keep nodes light gray
+    ),
+    link=dict(
+        source=links_df['source'],
+        target=links_df['target'],
+        value=links_df['value'],
+        color=links_df['color']
+    ),
+    arrangement='snap'
+)])
+
+# Update layout for better visualization
+fig.update_layout(
+    title_text='', 
+    font=dict(
+        size=14,
+        color='black'  # Ensure font color is black
+    ),
+    title_font_color='black'
+)
+
+# Show the figure
+fig.show()
+
+import os
+import plotly.io as pio
+from PIL import Image
+import io
+
+# Expand the user home directory
+output_path = os.path.expanduser("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_sankey_fdr.tiff")
+
+# Ensure the directory exists
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+# Generate PNG first with reduced size
+png_bytes = pio.to_image(fig, format='png', scale=2, width=1800, height=1200)
+
+# Convert to TIFF using Pillow
+from PIL import Image, ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # Handle potential truncated images
+
+# Increase the pixel limit to handle large images
+Image.MAX_IMAGE_PIXELS = None  # Removes the pixel limit warning
+
+img = Image.open(io.BytesIO(png_bytes))
+img.save(output_path, 
+         compression="tiff_adobe_deflate", 
+         dpi=(300, 300))
+
+print(f"Image saved to {output_path}")
+```
+
+#export IPA summary
 ```{r}
-library(webshot2)
-library(magick)
+ipa_raw_p <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_combined.csv") |>
+  clean_names() |>
+  dplyr::filter(p_value < 0.05) |>
+  select(-c(2,4,5)) |>
+  rename(raw_p_value = p_value)
 
-# First, save the Sankey diagram as an HTML file in a temporary location
-temp_html <- tempfile(fileext = ".html")
-htmlwidgets::saveWidget(sankey_diagram, temp_html, selfcontained = TRUE)
+ipa_fdr <- read_csv("~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_fdr.csv") |>
+  clean_names() |>
+  select(c(1,3,7)) |>
+  rename(FDR_BH_pvalue = b_h_p_value)
 
-# Use webshot2 to capture the HTML as a high-resolution PNG
-temp_png <- tempfile(fileext = ".png")
-webshot(temp_html, temp_png, 
-        vwidth = 1000, vheight = 1200, zoom = 2)
+ipa_export<- ipa_raw_p |>
+  left_join(ipa_fdr, by = c("ingenuity_canonical_pathways", "exposure")) |>
+  select(c(4,1,5,3,2,6)) |>
+  mutate(
+    exposure = recode(
+      exposure,
+      "pm" = "PM2.5",
+      "bc" = "Black Carbon"
+    )
+  ) |>
+  filter(FDR_BH_pvalue<0.2)
 
-# Convert PNG to TIFF using magick
-image_read(temp_png) %>%
-  image_convert(format = "tiff") %>%
-  image_write("~/Documents/air_polln_rna_seq/results/ipa_yu_chin/sankey.tiff")
+write_csv(ipa_export, "~/Documents/air_polln_rna_seq/results/ipa_may2025/ipa_fdr_summary.csv")
+``` 
 
-# Clean up temporary files
-file.remove(temp_html)
-file.remove(temp_png)
+#export data
+```{r}
+all_results_chars <- all_results |> 
+  mutate(across(everything(), as.character))
+
+# Get max width per column
+col_widths <- sapply(all_results_chars, function(col) max(nchar(col), nchar(names(all_results_chars))))
+
+# Function to pad a vector to a fixed width
+pad_col <- function(col, width) {
+  format(col, width = width, justify = "left")
+}
+
+# Pad each column
+all_results_padded <- as.data.frame(
+  mapply(pad_col, all_results_chars, col_widths, SIMPLIFY = FALSE),
+  stringsAsFactors = FALSE
+)
+
+# Create header line
+header <- paste(mapply(format, names(all_results_padded), width = col_widths, justify = "left"), collapse = "  ")
+
+# Create data lines
+data_lines <- apply(all_results_padded, 1, paste, collapse = "  ")
+
+# Write to file
+writeLines(c(header, data_lines), "~/Documents/air_polln_rna_seq/results/gene_summary_publication.txt")
 ```
 

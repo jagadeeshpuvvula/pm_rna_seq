@@ -4,52 +4,59 @@ author: "Jagadeesh Puvvula"
 date: "2024-12-29"
 output: pdf_document
 ---
-#RNA-seq and metabolome variables with statistical significance
-```{r}
-#RNA
-twas<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv") |>
-  filter(FDR < 0.05) |>
-  filter(str_starts(predictor_variable, "pm")) |>
-  distinct(gene, gene_symbol)
-
-#metabolome
-metwas<- read_csv("~/Documents/air_polln_rna_seq/results/lm_MetWAS/placenta_mwas_anno.csv") |>
-  filter(fdr < 0.05) |>
-  filter(str_starts(variable, "pm")) |>
-  distinct(chem_id, chemical_name)
-```
 
 #Clean RNAseq, exposure, covariate data
 ```{r}
-load("~/Documents/air_polln_rna_seq/crib_data/for_mediation_analy.rda")
+load("~/Documents/air_polln_rna_seq/results/for_mediation_analy.rda")
 
+#excluding smokers
 df_analysis<- df_analysis |>
-  select(c(1:12)) |>
-  left_join(pm2, by = "subject_id") #pm2 is from file: 06_TWAS
+  filter(tobacco_use_dur_preg == "No")
+```
 
+#filter genes significantly associated with exposures
+```{r}
 #filtered genes that are significantly associated with air pollution
-rna_seq_med <- edge_df |>
-  filter(Gene %in% twas$gene) |>
-  t()
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_april_11.csv") |>
+  mutate(
+    predictor_numeric = ifelse(grepl("_all$", predictor_variable), "Overall", 
+                              as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable))),
+    predictor_numeric = factor(predictor_numeric, levels = c("Overall", "1", "2", "3", "4", "5")),
+    predictor_prefix = substr(predictor_variable, 1, 2),
+    predictor_prefix = if_else(predictor_prefix == "pm", "PM2.5", "Black Carbon")
+  ) |>
+  filter(FDR < 0.2,
+         predictor_prefix == "Black Carbon") ## Update this line
+
+#match number of genes including in the analysis
+n_distinct(all_results$gene_symbol) # should be 50 for PM and 63 for BC
+
+rna_seq_med <- transcriptome_clean |>
+  as.data.frame() |>
+  rownames_to_column(var = "gene") |>
+  filter(gene %in% all_results$gene) |>
+  t() |>
+  as.data.frame() 
 
 # Set the first row as column names and remove it from the data
 colnames(rna_seq_med) <- rna_seq_med[1, ]
-rna_seq_med <- rna_seq_med[-1, ] 
+rna_seq_med <- rna_seq_med[-1, , drop = FALSE] 
 
 #scaling rna seq values
-rna_seq_med_numeric <- matrix(as.numeric(rna_seq_med), nrow=nrow(rna_seq_med), ncol=ncol(rna_seq_med))
-rownames(rna_seq_med_numeric) <- rownames(rna_seq_med)
-colnames(rna_seq_med_numeric) <- colnames(rna_seq_med)
-scaled_rna_seq_med <- scale(rna_seq_med_numeric)
-
+rna_seq_med_z <- rna_seq_med |>
+  mutate(across(everything(), ~ {
+    x <- as.numeric(.)
+    (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+  }))
 ```
 
 #Metabolome data
 ```{r}
 metabo_linkage <- read_csv("~/Documents/air_polln_rna_seq/crib_data/metabolome_paired/metabolome_linkage.csv") |>
-  clean_names() |>
-  select(c(1,23)) |>
-  mutate(sample_description = sub("PCFSBDEB[1-4]$", "", sample_description))
+  janitor::clean_names() |>
+  dplyr::select(parent_sample_name, sample_description) |>
+  dplyr::mutate(sample_description = sub("PCFSBDEB[1-4]$", "", sample_description))
+
 
 placenta_metabo <- read_csv("~/Documents/air_polln_rna_seq/crib_data/metabolome_paired/metabolome_conc.csv") |>
   clean_names() |>
@@ -60,27 +67,23 @@ placenta_metabo <- read_csv("~/Documents/air_polln_rna_seq/crib_data/metabolome_
   select(-c(2)) |>
   mutate(across(2:last_col(), ~ log10(. + 0.00001))) |>
   mutate(across(2:last_col(), ~ (. - mean(.)) / sd(.))) |>
-  select(-where(~any(is.na(.)))) |>
-  filter(subject_id %in% df_analysis$subject_id) |>
-  (\(df) {
-    relevant_names <- names(df)[gsub("^x", "", names(df)) %in% metwas$chem_id]
-    select(df, subject_id, all_of(relevant_names))
-  })() |>
   column_to_rownames("subject_id") |>
-  as.matrix()
+  #select(c("x100001755"))  #for pm2.5
+
+  select(c("x49", "x280", "x1538", "x100006292", "x100001866")) #for BC
+
+  
 ```
 
 #combine RNA-seq and metabolite into a single matrix
 ```{r}
-# Ensure row names are aligned
-common_samples <- intersect(rownames(scaled_rna_seq_med), rownames(placenta_metabo))
-
-# Subset both matrices to include only common samples
-scaled_rna_seq_med_matched <- scaled_rna_seq_med[common_samples, , drop = FALSE]
-placenta_metabo_matched <- placenta_metabo[common_samples, , drop = FALSE]
-
-# Combine into a single matrix
-combined_matrix <- cbind(scaled_rna_seq_med_matched, placenta_metabo_matched)
+combined_df <- list(rna_seq_med_z, 
+                    placenta_metabo, 
+                    df_analysis) |>
+  map(~ as_tibble(., rownames = "sample")) |>
+  reduce(inner_join, by = "sample") |>
+  column_to_rownames(var = "sample") |>
+  mutate(ptb = as.factor(if_else(ptb == "Term", 0, 1)))
 ```
 
 #mediation analysis
@@ -92,24 +95,48 @@ combined_matrix <- cbind(scaled_rna_seq_med_matched, placenta_metabo_matched)
 #rimp: relative importance of the mediator.
 #pmax: joint raw p-value of selected significant mediator (based on divide-aggregate compositenull test [DACT] method).
 ```{r}
-classicHima.fit <- classicHIMA(
-  X = as.numeric(df_analysis$pm_26),
-  Y = as.factor(df_analysis$ptb),
-  M = combined_matrix,
-  #COV.XM = df_analysis[, c("ga_at_delivery", "maternal_age")],
-  #COV.MY = df_analysis[, c("ga_at_delivery", "maternal_age")],
-  penalty = c("lasso"),
-  Bonfcut = 0.1,
+library(HIMA)
+
+classicHima.fit <- hima_classic(
+  X = as.numeric(combined_df$pm_days_5),
+  Y = as.factor(combined_df$ptb),
+  M = as.matrix(combined_df[1:51]),
+  #COV.XM = as.matrix(combined_df[, c("ga_at_delivery", "maternal_age")]),
+  #COV.MY = combined_df[, c("ga_at_delivery", "maternal_age")],
+  penalty = c("SCAD"),
+  Bonfcut = 0.2,
   Y.type = "binary",
   scale = T, 
   verbose = TRUE,
   parallel = T,
   ncore = 10
   )
+
+classicHima.fit %>%
+  mutate(
+    across(where(is.numeric) & !matches("pmax"), ~ round(.x, 2)),
+    pmax = formatC(pmax, format = "e", digits = 1)
+  )
+
+# Run the model
+mod <- glm(ptb ~ pm_days_3, data = combined_df, family = binomial)
+
+# Tidy, filter, and format the output
+tidy(mod) %>%
+  filter(term == "pm_days_3") %>%
+  mutate(
+    estimate = round(estimate, 2),
+    std.error = round(std.error, 2),
+    statistic = round(statistic, 2),
+    p.value = formatC(p.value, format = "e", digits = 2)
+  )
 ```
 
 #automating
 ```{r}
+#define comparision group
+df_analysis$ptb <- relevel(df_analysis$ptb, ref = "Term")
+
 # Initialize empty dataframe
 final_results <- data.frame()
 
@@ -205,6 +232,80 @@ write_csv(mediation_res, "~/Documents/air_polln_rna_seq/results/mediation_result
 mediation_plt<- mediation_res |>
   filter(n() > 1) |>
   ungroup() 
+
+```
+
+#cmaverse - Attempt on April 15
+```{r}
+library(CMAverse)
+```
+
+```{r}
+res_iorw <- cmest(data = combined_df, 
+                 model = "rb", 
+                 outcome = "ptb",
+                 exposure = "bc_days_4",
+                 mediator = c("ENSG00000235162", "ENSG00000163492", 
+                              "ENSG00000175315", "ENSG00000169429"), 
+                 basec = c("ga_at_delivery", "parity"), 
+                 EMint = F,
+                 mreg = list("linear", "linear", "linear", "linear"),  # All mediators are continuous z-scores
+                 yreg = "logistic",  # Binary outcome
+                 astar = 5, a = 20, 
+                 mval = list(0, 0, 0, 0), 
+                 estimation = "imputation", 
+                 inference = "bootstrap", nboot = 20)
+
+summary(res_iorw)
+```
+
+#single mediation analysis
+```{r}
+library(mediation)
+
+combined_df <- combined_df |>
+  dplyr::mutate(ptb = factor(ptb))  # ensure it's a factor
+
+# Relevel
+combined_df$ptb <- relevel(combined_df$ptb, ref = "0")
+
+# Mediator model
+med_model <- lm(ENSG00000005381 ~ ptb + 
+                  race + bmi + education + tobacco_use_dur_preg + parity,
+                data = combined_df)
+
+# Outcome model
+out_model <- lm(bc_days_3 ~ ptb + ENSG00000005381 + 
+                  race + bmi + education + tobacco_use_dur_preg + parity,
+                data = combined_df)
+
+# Mediation
+med_results <- mediate(med_model, out_model, 
+                       treat = "ptb", 
+                       mediator = "ENSG00000005381", 
+                       boot = TRUE, sims = 1000,
+                       conf.level = .80)
+
+s <- summary(med_results)
+
+med_table <- tibble(
+  Term = c("ACME", "ADE", "Total Effect", "Proportion Mediated"),
+  Estimate = c(s$d0, s$z0, s$tau.coef, s$n0),
+  CI_Lower = c(s$d0.ci[1], s$z0.ci[1], s$tau.ci[1], s$n0.ci[1]),
+  CI_Upper = c(s$d0.ci[2], s$z0.ci[2], s$tau.ci[2], s$n0.ci[2]),
+  p_value = c(s$d0.p, s$z0.p, s$tau.p, s$n0.p)
+) |>
+  mutate(
+    Estimate = round(Estimate, 2),
+    CI_Lower = round(CI_Lower, 2),
+    CI_Upper = round(CI_Upper, 2),
+    p_value = round(p_value, 3),
+    Formatted = paste0(Estimate, " (", CI_Lower, ", ", CI_Upper, ")")
+  ) |>
+  dplyr::select(Term, Formatted, p_value)
+
+med_table
+
 
 ```
 

@@ -7,7 +7,7 @@ output: pdf_document
 
 ```{r}
 library(pacman,)
-pacman::p_load(tidyverse, janitor, viridis, gridExtra, grid, lattice)
+pacman::p_load(tidyverse, janitor, viridis, gridExtra, grid, lattice, broom, mediation)
 #library(GEOquery)
 ```
 

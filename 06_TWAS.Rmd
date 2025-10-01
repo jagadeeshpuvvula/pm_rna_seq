@@ -5,88 +5,126 @@ date: "2024-12-17"
 output: pdf_document
 ---
 
+#dont use this daily concentration data anymore
 ```{r}
 #air pollution data - standardized to mean 0 and SD=1
-load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
-rm(list = setdiff(ls(), "ap_exposures"))
-pm2<- ap_exposures |>
-  select(subject_id, 
-         matches("^pm_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$"),
-         matches("^bc_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$")) |>
-  mutate(across(
-  .cols = -subject_id, 
-  .fns = ~ log10(.x)
-)) |>
-  clean_names()
+#load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/exposure_data.rda")
+#rm(list = setdiff(ls(), "ap_exposures"))
+#pm2<- ap_exposures |>
+#  select(subject_id, 
+#         matches("^pm_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$"),
+#         matches("^bc_([1-9]|[1-9][0-9]|1[0-3][0-9]|140|141)$")) |>
+#  mutate(across(
+#  .cols = -subject_id, 
+#  .fns = ~ log10(.x)
+#)) |>
+#  clean_names()
+```
 
+#air pollution anomaly data - generated in April 2025
+```{r}
+ap_anomal<- read_csv("~/Documents/air_polln_rna_seq/crib_data/ap_anomaly_counts.csv") |>
+  mutate(
+    pm_days_all = rowSums(across(starts_with("pm_days_")), na.rm = TRUE),
+    bc_days_all = rowSums(across(starts_with("bc_days_")), na.rm = TRUE)
+  )
 
-#meta data
+#Covariates and air pollution anomaly days
 load("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/df_analysis.rda") 
 df_analysis<- df_analysis |> select(-c(5,13,14)) |>
   filter(!(subject_id == 1092 & duplicated(subject_id)),
          subject_id != 389) |> #missing RNAseq data
-  left_join(pm1, by = "subject_id") 
+  left_join(ap_anomal, by = "subject_id") |>
+  column_to_rownames(var = "subject_id")
+
+rm(ap_anomal)
+```
+
+#statistical testing - table 1.
+```{r}
+cont_vars <- c("maternal_age", "bmi", "ga_at_delivery", 
+               "pm_days_all", "bc_days_all") 
+
+cat_vars  <- c("tobacco_use_dur_preg", "education", "race",
+               "parity", "neonatal_sex", "delivery_mode")  
+
+# Continuous variable results (t-test)
+cont_results <- cont_vars |> 
+  lapply(function(v) {
+    t_out <- t.test(df_analysis[[v]] ~ df_analysis$ptb)
+    broom::tidy(t_out) |>
+      dplyr::mutate(variable = v, test = "t-test")
+  }) |>
+  dplyr::bind_rows()
+
+# Categorical variable results (Chi-square)
+cat_results <- cat_vars |> 
+  lapply(function(v) {
+    tbl <- table(df_analysis[[v]], df_analysis$ptb)
+    chi_out <- chisq.test(tbl)
+    broom::tidy(chi_out) |>
+      dplyr::mutate(
+        variable = v,
+        test = "Chi-square",
+        estimate = NA,
+        estimate1 = NA,
+        estimate2 = NA,
+        conf.low = NA,
+        conf.high = NA
+      )
+  }) |>
+  dplyr::bind_rows()
+
+# Combine and format
+results <- dplyr::bind_rows(cont_results, cat_results) |>
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric) & !dplyr::all_of("p.value"),
+      ~ round(.x, 2)
+    ),
+    p.value = round(p.value, 4)
+  ) |>
+  dplyr::select(variable, test, estimate, estimate1, estimate2, statistic, p.value, conf.low, conf.high)
+
+```
+
+
+```{r}
+#Gene list shared by Yu-Chin that are linked with Preterm birth
+filter_genes<- read_csv("~/Documents/air_polln_rna_seq/crib_data/yu_chin_genes_ptb.csv") |> 
+  clean_names() |>
+  mutate(gene_symbol = toupper(gene_symbol)) |>
+  select(c(1))
 
 #RNAseq data original data with 61,323 genes
 rna_seq_df <- read_csv("~/Documents/air_polln_rna_seq/normalized_rna_seq_crib/placenta_counts_normalized_by_DESeq2_CRIB.csv") %>%
-  filter(rowSums(select(., 3:78) == 0) < (ncol(select(., 3:78)) * 0.90))
-  # 24,545 genes after dropping genes with 90% participants have null values
-  
+  filter(rowSums(select(., 3:78) == 0) < (ncol(select(., 3:78)) * 0.90)) |> # 24,545 genes after dropping genes with 90% participants have null values
+  mutate(gene_symbol = toupper(gene_symbol)) |>
+  semi_join(filter_genes, by = "gene_symbol")
   
 rna_seq_df_analysis<- rna_seq_df |>select(-c(2,77,78))
 
 # Then filter rows where sum >= 10
 rna_seq_df_analysis <- rna_seq_df_analysis[rowSums(rna_seq_df_analysis[, 2:75]) > 10, ]
 #retaining 24,205 genes for analysis
-```
 
-#box plots for RNAseq data - to check if data is transformed.
-#use this transposed data for other analysis
-```{r}
-rna_seq_viz <- rna_seq_df |> 
-  select(-1) |>                   # Step 1: Remove the first column
-  t() |>                         # Step 2: Transpose the data frame
-  as.data.frame() |>             # Step 3: Convert to a data frame
-  rownames_to_column("subject_id") |> # Optional: Convert row names to a column
-  (\(df) {                       # Step 4: Anonymous function for column renaming
-    colnames(df)[-1] <- df[1, -1]
-    df[-1, ]                     # Remove the first row and return
-  })()
+rm(filter_genes, rna_seq_df)
 ```
 
 #sort and filter RNAseq data
 ```{r}
 # First create the matrix
 rna_seq_sorted <- rna_seq_df_analysis |>
-    select(all_of(intersect(rownames(df_analysis), colnames(rna_seq_df_analysis)))) |>
-    as.matrix() |>
-    round()
+  select(Gene, all_of(intersect(rownames(df_analysis), colnames(rna_seq_df_analysis)))) |>
+  column_to_rownames("Gene") |>  # Move gene names to row names
+  as.matrix() |>
+  round()
 ```
 
 #check the sequence and participants with pm data have RNAseq data
 ```{r}
 all(colnames(rna_seq_sorted) %in% rownames(df_analysis))
 all(colnames(rna_seq_sorted) == rownames(df_analysis))
-```
-
-# DESeq2 pipeline for categorical exposure data
-```{r}
-library(DESeq2)
-
-dds <- DESeqDataSetFromMatrix(countData = rna_seq_sorted,
-                              colData = df_analysis,
-                              design= ~ race + maternal_age + bmi + 
-                                education + tobacco_use_dur_preg + parity +
-                                pm_1)
-
-dds<- DESeq(dds)
-result_rna_seq <- results(dds, 
-                          pAdjustMethod = "BH",
-                          alpha = 0.01,
-                          parallel = T)
-summary(result_rna_seq)
-
-result_df<- as.data.frame(result_rna_seq)
 ```
 
 ###################################################
@@ -101,13 +139,13 @@ load("~/Documents/air_polln_rna_seq/crib_data/for_mediation_analy.rda")
 
 # Assuming edger_df is your tibble
 # Extract the count data (all columns except the first one)
-counts <- edge_df[, -1]
+counts <- rna_seq_df_analysis[, -1]
 
 # Convert counts to a matrix
 counts_matrix <- as.matrix(counts)
 
 # Set row names of the matrix to be the Gene column
-rownames(counts_matrix) <- edge_df$Gene
+rownames(counts_matrix) <- rna_seq_df_analysis$Gene
 
 # Create the DGEList object
 dgList <- DGEList(counts = counts_matrix)
@@ -129,17 +167,22 @@ dgList <- DGEList(counts = counts_matrix)
 #edgeR pipeline for continous exposure -test
 ```{r}
 # Ensure your design matrix is properly set up
-designMat <- model.matrix(~ pm_2 + race + maternal_age + bmi + 
+designMat <- model.matrix(~ pm_days_1 + race + maternal_age + bmi + 
                           education + tobacco_use_dur_preg + 
                           parity, 
                         data = df_analysis)
+
+# Create DGEList object first
+dgList <- DGEList(counts = rna_seq_sorted)
+
+# Calculate normalization factors
+dgList <- calcNormFactors(dgList)
 
 # Estimate dispersion
 dgList <- estimateDisp(dgList, designMat)
 
 # Fit the model
-fit <- glmQLFit(dgList, designMat, 
-                robust = TRUE)
+fit <- glmQLFit(dgList, designMat, robust = TRUE)
 
 # Test for differential expression
 # Here, we're testing the effect of pm_1 (assuming it's the second column in designMat)
@@ -153,7 +196,13 @@ all_results <- as.data.frame(top_results)
 #iterate through daily pm and bc exposures
 ```{r}
 # Get all column names starting with "pm_" or "bc_"
-predictor_vars <- grep("^(pm_|bc_)", names(df_analysis), value = TRUE)
+predictor_vars <- grep("^(pm_days_|bc_days_)", names(df_analysis), value = TRUE)
+
+# Create DGEList object first - do this once outside the loop
+dgList <- DGEList(counts = rna_seq_sorted)
+
+# Calculate normalization factors
+dgList <- calcNormFactors(dgList)
 
 # Initialize an empty list to store results
 results_list <- list()
@@ -165,11 +214,11 @@ for (var in predictor_vars) {
     data = df_analysis
   )
   
-  # Estimate dispersion
-  dgList <- estimateDisp(dgList, designMat)
+  # Estimate dispersion for this model
+  dgList_var <- estimateDisp(dgList, designMat)
   
   # Fit the model
-  fit <- glmQLFit(dgList, designMat, robust = TRUE)
+  fit <- glmQLFit(dgList_var, designMat, robust = TRUE)
   
   # Test for differential expression
   qlf <- glmQLFTest(fit, coef = 2)
@@ -194,7 +243,7 @@ all_results <- do.call(rbind, results_list)
 # Reset row names
 rownames(all_results) <- NULL
 
-write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_twas.csv")
+write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_anomal_twas.csv")
 ```
 
 #explore findings
@@ -205,39 +254,109 @@ rna_seq_df <- read_csv("~/Documents/air_polln_rna_seq/normalized_rna_seq_crib/pl
   clean_names()
 
 #adding gene names
-all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas.csv") |>
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_anomal_twas.csv") |>
   left_join(rna_seq_df, by = "gene")
 
-write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv")
+write_csv(all_results, "~/Documents/air_polln_rna_seq/results/pm_bc_twas_april_11.csv")
 ```
 
 #summarizing and viz
 ```{r}
-all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_dec_29.csv")
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_april_11.csv")
 
 #filtered results by 5% FDR
 res_df<- all_results |>
-  filter(FDR < 0.05)
+  filter(FDR < 0.2)
 
-#for PM2.5 only
+# To create a summary table that matches your approach:
+##########################################################################################
+# Summary table without filtering for count >= 2
 summary_table <- res_df |>
-  filter(str_starts(predictor_variable, "pm"))|>
-  group_by(gene_symbol, logFC_sign = ifelse(logFC > 0, "upregulated", "downregulated")) |>
+  mutate(predictor_prefix = substr(predictor_variable, 1, 2)) |>
+  group_by(gene_symbol, predictor_prefix) |>
+  summarise(
+    count = n(),
+    predictor_values_list = paste(predictor_variable, collapse = ", ")
+  ) |>
+  ungroup()
+
+# Since you're not filtering the summary_table, you should just use the original res_df
+# with the same transformations for consistency
+filtered_res_df <- res_df |>
+  # No need to filter by summary_table$gene_symbol anymore
+  mutate(
+    predictor_numeric = ifelse(grepl("_all$", predictor_variable), "Overall", 
+                              as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable))),
+    predictor_numeric = factor(predictor_numeric, levels = c("Overall", "1", "2", "3", "4", "5")),
+    predictor_prefix = substr(predictor_variable, 1, 2),
+    predictor_prefix = if_else(predictor_prefix == "pm", "PM2.5", "Black Carbon")
+  )
+
+# The rest of your code stays the same
+summary_stats <- filtered_res_df |>
+  group_by(predictor_prefix) |>
+  summarise(
+    unique_genes = n_distinct(gene_symbol)
+  ) |>
+  bind_rows(
+    data.frame(
+      predictor_prefix = "Common to both",
+      unique_genes = length(
+        intersect(
+          filtered_res_df |> filter(predictor_prefix == "PM2.5") |> pull(gene_symbol) |> unique(),
+          filtered_res_df |> filter(predictor_prefix == "Black Carbon") |> pull(gene_symbol) |> unique()
+        )
+      )
+    )
+  )
+
+repetition_counts <- filtered_res_df |>
+  mutate(logFC_sign = ifelse(logFC > 0, "upregulated", "downregulated")) |>
+  group_by(gene_symbol, predictor_prefix) |>
+  summarise(
+    distinct_levels = n_distinct(predictor_numeric),
+    logFC_sign = paste(sort(unique(logFC_sign)), collapse = "/"),  # eg "downregulated/upregulated"
+    .groups = "drop"
+  ) |>
+  group_by(predictor_prefix, distinct_levels, logFC_sign) |>
+  summarise(
+    count = n(),
+    .groups = "drop"
+  ) |>
+  pivot_wider(
+    names_from = distinct_levels,
+    values_from = count,
+    names_prefix = "Repeated_",
+    values_fill = 0
+  )
+
+
+final_summary <- summary_stats |>
+  left_join(repetition_counts, by = "predictor_prefix")
+##########################################################################################
+
+#Filter genes associated more than once and vis
+summary_table <- res_df |>
+  mutate(predictor_prefix = substr(predictor_variable, 1, 2))|>
+  group_by(gene_symbol, predictor_prefix,
+           #logFC_sign = ifelse(logFC > 0, "upregulated", "downregulated")
+           ) |>
   summarise(
     count = n(),
     predictor_values_list = paste(predictor_variable, collapse = ", ")
   ) |>
   ungroup() |>
-  filter(count >= 7)
+  filter(count >= 2)
 
 filtered_res_df <- res_df |>
   filter(gene_symbol %in% summary_table$gene_symbol) |>
   mutate(
-    predictor_numeric = as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable)),
+    predictor_numeric = ifelse(grepl("_all$", predictor_variable), "Overall", 
+                               as.numeric(gsub(".*_([0-9]+)$", "\\1", predictor_variable))),
+    predictor_numeric = factor(predictor_numeric, levels = c("Overall", "1", "2", "3", "4", "5")),
     predictor_prefix = substr(predictor_variable, 1, 2)  # Extract first two characters of predictor_variable
   ) |>
   group_by(gene_symbol, predictor_prefix) |>
-  filter(n() >= 30) |>
   ungroup() |>
   mutate(predictor_prefix = if_else(predictor_prefix == "pm", "PM2.5", "Black Carbon"))
 ```
@@ -246,14 +365,14 @@ filtered_res_df <- res_df |>
 ```{r}
 ggplot(filtered_res_df, aes(x = predictor_numeric, y = gene_symbol, fill = logFC)) +
   geom_tile(color = "white") +
-  scale_x_continuous(breaks = sort(unique(filtered_res_df$predictor_numeric)),
-                     expand = c(0, 0)) +
+  scale_x_discrete() +
   scale_fill_gradient2(low = "royalblue", mid = "white", high = "red", midpoint = 0, name = "logFC") +
-  facet_grid(predictor_prefix~., scales = "free_y")+
-  geom_vline(xintercept = 92.5, linetype = "dashed", linewidth=1, color = "black") +
-  labs(x = "Fine particulate matter exposure during gestation", y = "Gene") +
+  facet_grid(.~predictor_prefix, scales = "free_x")+
+  geom_vline(xintercept = 1.5, linetype = "dashed", linewidth=1, color = "gray55") +
+  geom_vline(xintercept = 4.5, linetype = "dashed", linewidth=1, color = "gray55") +
+  labs(x = "Gestational fine particulate matter exposures", y = "Gene") +
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0),
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0),
         axis.text.y = element_text(angle = 0, face = "italic"),
         strip.text = element_text(face = "bold"),
         legend.position = "bottom",
@@ -263,12 +382,57 @@ ggplot(filtered_res_df, aes(x = predictor_numeric, y = gene_symbol, fill = logFC
         panel.grid.major.x = element_blank(), 
         panel.grid.minor.x = element_blank() )
 
-ggsave("~/Documents/air_polln_rna_seq/results/ap_rna_seq_result_first140days.tiff",
+ggsave("~/Documents/air_polln_rna_seq/results/ap_anomalies_rna_seq.tiff",
        dpi=300,
        bg="white",
-       width = 14,
-       height = 8)
+       width = 6,
+       height = 6)
 ```
+
+#upset plot
+```{r}
+library(UpSetR)
+
+upset_plt<-filtered_res_df |>
+  mutate(predictor_combined = paste(predictor_prefix, predictor_numeric, sep = "-")) |>
+  select(c(8,11)) 
+  
+upset_data <- upset_plt |> 
+    mutate(present = 1) |> 
+    pivot_wider(names_from = predictor_combined,
+                values_from = present,
+                values_fill = 0) |> 
+    distinct() |>as.data.frame()
+
+custom_order <- rev(c(
+  "PM2.5-Overall","PM2.5-1", "PM2.5-2", "PM2.5-3", "PM2.5-4", "PM2.5-5",
+  "Black Carbon-Overall", "Black Carbon-1", "Black Carbon-2", "Black Carbon-3",
+  "Black Carbon-4", "Black Carbon-5"
+))
+
+#plot and save
+# Step 1: Open the TIFF graphics device
+tiff("~/Documents/air_polln_rna_seq/results/upset_plot.tiff", 
+     width = 10, height = 8, units = "in", res = 300)
+
+# Step 2: Create the upset plot
+upset(upset_data, 
+      sets = custom_order, 
+      sets.bar.color = c("#0072B2", "#0072B2", "#0072B2", "#0072B2", "#0072B2", "#0072B2",
+                         "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00"),
+      set_size.show = TRUE,
+      keep.order = TRUE,
+      text.scale = 1.5, point.size = 3, line.size = 1,
+      mainbar.y.max = 31,
+      set_size.scale_max = 48,
+      mainbar.y.label = "No.of genes \noverlapped",
+      sets.x.label = "Total no.of altered genes")
+
+# Step 3: Close the TIFF device and save the file
+dev.off()
+
+```
+
 
 #twas summary exposure for yu-chin
 ```{r}
@@ -332,12 +496,36 @@ ggsave("~/Documents/air_polln_rna_seq/results/for_yu_chin/gene_frequency.tiff",
 library(pacman)
 p_load(tidyverse, clusterProfiler, org.Hs.eg.db, DOSE, 
        msigdbr, enrichplot, AnnotationDbi, biomaRt)
+
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_april_11.csv")
+
+#filtered results by 5% FDR
+res_df<- all_results |>
+  filter(FDR < 0.2)
+
+
 #m_df <- msigdbr(species = "Homo sapiens")
 
 enrich_df_pm <- all_results |>
-  filter(FDR < 0.05,
-         str_starts(predictor_variable, "pm")) |>
-  distinct(gene_symbol, gene)
+  filter(FDR < 0.2) |>
+  filter(!str_ends(predictor_variable, "all")) |>
+  mutate(pred_prefix = substr(predictor_variable, 1, 2)) |>
+  add_count(gene_symbol, pred_prefix, name = "n_pred_prefix") |>
+  filter(n_pred_prefix >= 1) |>
+  distinct(gene, gene_symbol, pred_prefix)
+
+#for yu-chin
+enrich_df_pm_wide <- enrich_df_pm |>
+  group_by(pred_prefix) |>
+  mutate(row_id = row_number()) |>
+  ungroup() |>
+  pivot_wider(
+    names_from = pred_prefix,
+    values_from = gene_symbol
+  ) |>
+  select(-row_id)
+
+write_csv(enrich_df_pm_wide, "~/Documents/air_polln_rna_seq/results/for_ipa_analysis.csv")
 
 entrez_ids <- AnnotationDbi::mapIds(
     org.Hs.eg.db,
@@ -357,40 +545,57 @@ geneList <- data.frame(gene = unique(all_results$gene)) |>
   left_join(entrez_ids, by = "gene")
 ```
 
+#export RNA seq summary stats for publication
 ```{r}
-#GO Gene Set Enrichment Analysis
-ego2 <- enrichGO(gene         = enrich_df_pm$gene,
-                OrgDb         = org.Hs.eg.db,
-                keyType       = 'ENSEMBL',
-                ont           = "CC",
-                pAdjustMethod = "BH",
-                pvalueCutoff  = 0.01,
-                qvalueCutoff  = 0.05, 
-                readable = T)
-goplot(ego2)
+all_results<- read_csv("~/Documents/air_polln_rna_seq/results/pm_bc_twas_april_11.csv") |>
+   mutate(
+    predictor_variable = recode(
+      predictor_variable,
+      "pm_days_all" = "PM2.5 Overall",
+      "pm_days_1"   = "PM2.5 Month 1",
+      "pm_days_2"   = "PM2.5 Month 2",
+      "pm_days_3"   = "PM2.5 Month 3",
+      "pm_days_4"   = "PM2.5 Month 4",
+      "pm_days_5"   = "PM2.5 Month 5",
+      "bc_days_all" = "Black Carbon Overall",
+      "bc_days_1"   = "Black Carbon Month 1",
+      "bc_days_2"   = "Black Carbon Month 2",
+      "bc_days_3"   = "Black Carbon Month 3",
+      "bc_days_4"   = "Black Carbon Month 4",
+      "bc_days_5"   = "Black Carbon Month 5"
+    )
+  )
 
+#export full results for publication
+# Combine header and data to calculate max width
+all_results_chars <- all_results |> 
+  mutate(across(everything(), as.character))
 
-x <- enrichDO(gene          = enrich_df_pm$entrez_id,
-              ont           = "DO",
-              pvalueCutoff  = 0.05,
-              pAdjustMethod = "BH",
-              universe      = geneList$entrez_id,
-              minGSSize     = 5,
-              maxGSSize     = 500,
-              qvalueCutoff  = 0.05,
-              readable      = T)
+# Get max width per column
+col_widths <- sapply(all_results_chars, function(col) max(nchar(col), nchar(names(all_results_chars))))
 
-cnetplot(x)
-heatplot(x, foldChange=geneList, showCategory=5)
-upsetplot(x)
+# Function to pad a vector to a fixed width
+pad_col <- function(col, width) {
+  format(col, width = width, justify = "left")
+}
 
-#
-x2 <- pairwise_termsim(x)
-treeplot(x2, hclust_method = "average")
-emapplot(x2, cex_category=1.5,layout="kk") 
-emapplot(x2, pie="count", cex_category=1.5, layout="kk")
+# Pad each column
+all_results_padded <- as.data.frame(
+  mapply(pad_col, all_results_chars, col_widths, SIMPLIFY = FALSE),
+  stringsAsFactors = FALSE
+)
+
+# Create header line
+header <- paste(mapply(format, names(all_results_padded), width = col_widths, justify = "left"), collapse = "  ")
+
+# Create data lines
+data_lines <- apply(all_results_padded, 1, paste, collapse = "  ")
+
+# Write to file
+writeLines(c(header, data_lines), "~/Documents/air_polln_rna_seq/results/gene_summary_publication.txt")
 
 ```
+
 
 
 

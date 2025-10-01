@@ -193,5 +193,114 @@ ggsave("~/Documents/air_polln_rna_seq/crib_data/data_clean_dec11_2024/mapping_pa
        dpi=300)
 ```
 
+#manuscript table
+```{r}
+df_mans_tbl<- df_analysis |> select(c(1:12))
 
+# Numeric variables summary
+numeric_summary <- df_mans_tbl %>%
+  group_by(ptb) %>%
+  summarise(across(
+    where(is.numeric), 
+    list(
+      median = ~round(median(., na.rm = TRUE), 2),
+      p25 = ~round(quantile(., probs = 0.25, na.rm = TRUE), 2),
+      p75 = ~round(quantile(., probs = 0.75, na.rm = TRUE), 2)
+    )
+  )) %>%
+  pivot_longer(
+    cols = -ptb,
+    names_to = c("variable", ".value"),
+    names_pattern = "(.+)_(.+)"
+  )
+
+# Categorical variables summary
+df_mans_tbl %>%
+  select(-c(1,2)) |>
+    tbl_summary(
+        by = ptb,
+        type = all_categorical() ~ "categorical",
+        statistic = all_categorical() ~ "{n} ({p}%)",
+        percent = "column",
+        missing = "no"
+    ) %>%
+    add_overall(last = TRUE) %>%
+    modify_header(label = "**Variable**") %>%
+    modify_spanning_header(c("stat_1", "stat_2", "stat_0") ~ "**PTB Levels**")
+
+#exposure values
+cols_to_keep <- names(ap_exposures) %>% 
+  str_subset("^(pm|bc)_\\d+") %>%          # Find pm_*/bc_* columns
+  keep(~as.numeric(str_extract(., "\\d+")) < 142)
+
+exp_summary <- ap_exposures |>
+  filter(subject_id %in% df_mans_tbl$subject_id) |>
+  select(
+    subject_id,            # This line keeps the subject_id
+    all_of(cols_to_keep)   # This keeps the filtered pm/bc columns
+  ) |>
+  left_join(df_mans_tbl %>% select(subject_id, ptb), by = "subject_id") |>
+  group_by(subject_id, ptb
+           ) |>
+  summarise(
+    pm_pct_days = round((sum(across(starts_with("pm_"), ~ sum(. > 9, na.rm = TRUE)))/141)*100, 2),
+    bc_pct_days = round((sum(across(starts_with("bc_"), ~ sum(. > 1, na.rm = TRUE)))/141)*100, 2)
+  )
+
+exp_summary |>
+    tbl_summary(
+        by = ptb
+    ) 
+```
+
+#supplemental analysis
+```{r}
+ext_analysis <- ap_exposures |>
+  filter(subject_id %in% df_mans_tbl$subject_id) |>
+  select(
+    subject_id,            # This line keeps the subject_id
+    all_of(cols_to_keep)   # This keeps the filtered pm/bc columns
+  ) |>
+  left_join(df_mans_tbl %>% select(subject_id, ptb,
+                                   race, maternal_age, bmi, education, tobacco_use_dur_preg, parity
+                                   ), by = "subject_id") |>
+  group_by(subject_id, ptb,
+           race, maternal_age, bmi, education, tobacco_use_dur_preg, parity
+           ) |>
+  #summarise(
+   # pm_days = sum(across(starts_with("pm_"), ~ sum(. > 9, na.rm = TRUE))),
+    #bc_days = sum(across(starts_with("bc_"), ~ sum(. > 1, na.rm = TRUE)))
+  #)
+  summarise(
+    # For pm_days, count occurrences of values above 9 in blocks of 30 pm_ variables
+    pm_days_20w = sum(across(starts_with("pm_"), ~ sum(. > 9, na.rm = TRUE))),
+    pm_days_1 = sum(across(2:31, ~ sum(. > 9, na.rm = TRUE))),
+    pm_days_2 = sum(across(32:61, ~ sum(. > 9, na.rm = TRUE))),
+    pm_days_3 = sum(across(62:91, ~ sum(. > 9, na.rm = TRUE))),
+    pm_days_4 = sum(across(92:121, ~ sum(. > 9, na.rm = TRUE))),
+    pm_days_5 = sum(across(122:142, ~ sum(. > 9, na.rm = TRUE))),
+    
+    # Similarly for bc_days, count occurrences of values above 1 in blocks of 30 bc_ variables
+    bc_days_20w = sum(across(starts_with("bc_"), ~ sum(. > 1, na.rm = TRUE))),
+    bc_days_1 = sum(across(143:172, ~ sum(. > 1, na.rm = TRUE))),
+    bc_days_2 = sum(across(173:202, ~ sum(. > 1, na.rm = TRUE))),
+    bc_days_3 = sum(across(203:232, ~ sum(. > 1, na.rm = TRUE))),
+    bc_days_4 = sum(across(233:263, ~ sum(. > 1, na.rm = TRUE))),
+    bc_days_5 = sum(across(264:283, ~ sum(. > 1, na.rm = TRUE)))
+  ) |>
+  ungroup()
+
+#export pm/bc anomaly counts
+#exp_ap_count<- ext_analysis |> select(c(1,9:18))
+#write_csv(exp_ap_count, "~/Documents/air_polln_rna_seq/crib_data/ap_anomaly_counts.csv")
+
+ext_analysis$ptb <- relevel(ext_analysis$ptb, ref = "Term")
+
+#logistic regression with count of days
+logit<- glm(ptb ~ pm_days_5 +
+              race + maternal_age + bmi + 
+              education + tobacco_use_dur_preg + parity, 
+            data = ext_analysis, family = "binomial")
+exp(cbind(OR = coef(logit), confint(logit)))
+```
 
