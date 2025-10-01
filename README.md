@@ -32,4 +32,4 @@ datasets : 4.5.0
 methods : 4.5.0 
 base : 4.5.0 
 
-##1.	Puvvula J, Chen A, Simmons R, Leite R, Lien YC. Gestational fine particulate matter exposures and spontaneous preterm birth: Elucidating mechanisms using placental transcriptome and metabolome signatures. Placenta. Volume 171, November 2025, Pages 121-129. https://doi.org/10.1016/j.placenta.2025.09.012 
+# Puvvula J, Chen A, Simmons R, Leite R, Lien YC. Gestational fine particulate matter exposures and spontaneous preterm birth: Elucidating mechanisms using placental transcriptome and metabolome signatures. Placenta. Volume 171, November 2025, Pages 121-129. https://doi.org/10.1016/j.placenta.2025.09.012 
